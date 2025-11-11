@@ -8,6 +8,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
 import time
+import os
+from dotenv import load_dotenv
+
+# Load environment variables (API keys)
+load_dotenv()
 
 def trigger_recompute_prompt(ss, label: str):
     """
@@ -30,8 +35,8 @@ def trigger_recompute_prompt(ss, label: str):
     st.cache_data.clear()
     st.cache_resource.clear()
 
-    # Small visual feedback toast
-    st.toast("⚙ Update registered — ready for heuristic recomputation.", icon="⚙️")
+    # Small visual feedback (guarded)
+    safe_toast("⚙ Update registered — ready for heuristic recomputation.", icon="⚙️")
 
 # ---------------------------
 # Helper: make debug visible
@@ -42,6 +47,55 @@ def dbg(msg):
         st.write(msg)
     except Exception:
         print(msg)
+
+
+# Guarded toast wrapper: some Streamlit installs may not support st.toast
+def safe_toast(message, icon=None):
+    try:
+        if icon is not None:
+            st.toast(message, icon=icon)
+        else:
+            st.toast(message)
+    except Exception:
+        try:
+            st.success(message)
+        except Exception:
+            print(message)
+
+# ---------------------------
+# AI Helper Functions (Gemini)
+# ---------------------------
+def get_gemini_model():
+    """Initialize and return Gemini AI model if API key is available."""
+    try:
+        import google.generativeai as genai
+        api_key = os.getenv('GEMINI_API_KEY')
+        if api_key:
+            genai.configure(api_key=api_key)
+            return genai.GenerativeModel('gemini-pro')
+        return None
+    except ImportError:
+        return None
+    except Exception as e:
+        st.warning(f"Gemini AI initialization failed: {str(e)}")
+        return None
+
+def generate_ai_insights(prompt, context_data=None):
+    """Generate AI insights using Gemini."""
+    model = get_gemini_model()
+    if not model:
+        return None
+    
+    try:
+        full_prompt = prompt
+        if context_data:
+            full_prompt = f"{context_data}\n\n{prompt}"
+        
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        st.error(f"AI generation failed: {str(e)}")
+        return None
 
 # ---------------------------
 # Old helpers (from your code)
@@ -863,22 +917,29 @@ def create_gantt_chart(
 
     pad = max((x_max - x_min) * 0.05, 100)
     fig.update_layout(
-        title=title,
-        xaxis_title="Time (minutes, shifted)",
-        yaxis_title="Machine",
+        title=dict(text=title, font=dict(size=16, color='black')),
+        xaxis_title=dict(text="Time (minutes, shifted)", font=dict(size=14, color='black')),
+        yaxis_title=dict(text="Machine", font=dict(size=14, color='black')),
         height=600,
         plot_bgcolor="white",
         paper_bgcolor="white",
-        margin=dict(l=50, r=20, t=60, b=40),
-        font=dict(size=12),
+        margin=dict(l=100, r=50, t=80, b=60),
+        font=dict(size=12, color='black'),
     )
     fig.update_yaxes(
         categoryorder="array",
         categoryarray=all_machines_sorted,
         autorange="reversed",
         type="category",
+        tickfont=dict(size=12, color='black'),
+        titlefont=dict(size=14, color='black'),
     )
-    fig.update_xaxes(range=[0 - pad, (x_max - x_min) + pad], showgrid=True)
+    fig.update_xaxes(
+        range=[0 - pad, (x_max - x_min) + pad], 
+        showgrid=True,
+        tickfont=dict(size=12, color='black'),
+        titlefont=dict(size=14, color='black'),
+    )
     return fig
 
 
@@ -1178,7 +1239,7 @@ def compute_all_heuristics_and_metrics(ss, show_progress=True):
 
     # ✅ Notify success
     st.success("✅ All heuristics recomputed successfully.")
-    st.toast("📊 Updated heuristic metrics ready for review!", icon="📈")
+    safe_toast("📊 Updated heuristic metrics ready for review!", icon="📈")
 
     # ✅ Clear any pending prompts (from breakdown / priority / outsourcing)
     ss.breakdown_pending = False
@@ -1208,7 +1269,7 @@ def compute_all_heuristics_and_metrics(ss, show_progress=True):
     schedule_key = f"schedule_{current_h.lower()}"
     if hasattr(ss, schedule_key):
         ss.current_schedule = getattr(ss, schedule_key).copy()
-        st.toast(f"🔁 Loaded updated schedule for {current_h}", icon="📈")
+        safe_toast(f"🔁 Loaded updated schedule for {current_h}", icon="📈")
     else:
         st.warning(f"⚠️ No schedule found for {current_h}. Please select a heuristic.")
         ss.current_schedule = pd.DataFrame()
@@ -1400,55 +1461,34 @@ def draw_heuristic_selector(ss):
             # set working copies to base data (dataset remains canonical until user applies)
             ss.df_ops = ss.base_df_ops.copy()
             ss.df_machines = ss.base_df_machines.copy()
-            st.toast(f"📊 Viewing {ss.current_heuristic} schedule (not applied).", icon="ℹ️")
+            safe_toast(f"📊 Viewing {ss.current_heuristic} schedule (not applied).", icon="ℹ️")
             st.rerun()
 
 def draw_live_job_scheduler(ss):
-    st.sidebar.markdown("### 🎯 Add Job")
-    st.sidebar.info("**EXPLAINER**: Add a new job and the system will analyze if it can be scheduled in-house or needs outsourcing.")
+    st.write("**➕ Add New Job**")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        live_job_id = st.text_input("Job ID:", f"J{900 + len(ss.df_ops['Job_ID'].unique())}", key='live_job_id')
+        live_quantity = st.number_input("Quantity:", min_value=10, max_value=1000, value=100, step=10, key='live_qty')
+    with col2:
+        live_priority = st.selectbox("Priority:", [1, 2, 3], index=0, key='live_priority')
+        live_due_days = st.number_input("Due (days):", min_value=1, max_value=30, value=7, step=1, key='live_due')
 
-    with st.sidebar.expander("📋 Schedule New Job", expanded=False):
-        st.write("**Enter Job Details:**")
-        col1, col2 = st.columns(2)
-        with col1:
-            live_job_id = st.text_input("Job ID:", f"J{900 + len(ss.df_ops['Job_ID'].unique())}", key='live_job_id')
-            live_quantity = st.number_input("Quantity:", min_value=10, max_value=1000, value=100, step=10, key='live_qty')
-        with col2:
-            live_priority = st.selectbox("Priority:", [1, 2, 3], index=0, key='live_priority')
-            live_due_days = st.number_input("Due in (days):", min_value=1, max_value=30, value=7, step=1, key='live_due')
+    live_op_count = st.slider("Operations:", 1, 5, 2, key='live_op_count')
 
-        st.write("**Operations Required:**")
-        live_op_count = st.slider("Number of Operations:", 1, 5, 2, key='live_op_count')
-
-        operations_config = []
-        for i in range(live_op_count):
-            st.write(f"**Operation {i+1}:**")
-            col_a, col_b = st.columns(2)
+    operations_config = []
+    for i in range(live_op_count):
+        with st.container():
+            col_a, col_b, col_c, col_d = st.columns(4)
             with col_a:
-                op_type = st.selectbox(
-                    f"Op{i+1} Type:",
-                    ['MILLING', 'TURNING', 'GRINDING', 'DRILLING'],
-                    key=f'live_op{i}_type'
-                )
+                op_type = st.selectbox(f"Op{i+1}:", ['MILLING', 'TURNING', 'GRINDING', 'DRILLING'], key=f'live_op{i}_type')
             with col_b:
-                material = st.selectbox(
-                    f"Op{i+1} Material:",
-                    ['STEEL', 'ALUM', 'TITAN', 'BRASS'],
-                    key=f'live_op{i}_mat'
-                )
-            col_c, col_d = st.columns(2)
+                material = st.selectbox(f"Mat:", ['STEEL', 'ALUM', 'TITAN', 'BRASS'], key=f'live_op{i}_mat')
             with col_c:
-                proc_time = st.number_input(
-                    f"Op{i+1} Time/Unit (min):",
-                    min_value=0.1, max_value=5.0, value=0.3, step=0.1,
-                    key=f'live_op{i}_time'
-                )
+                proc_time = st.number_input(f"Time:", min_value=0.1, max_value=5.0, value=0.3, step=0.1, key=f'live_op{i}_time')
             with col_d:
-                setup_time = st.number_input(
-                    f"Op{i+1} Setup (min):",
-                    min_value=10, max_value=120, value=30, step=5,
-                    key=f'live_op{i}_setup'
-                )
+                setup_time = st.number_input(f"Setup:", min_value=10, max_value=120, value=30, step=5, key=f'live_op{i}_setup')
 
             operations_config.append({
                 'op_type': op_type,
@@ -1457,444 +1497,202 @@ def draw_live_job_scheduler(ss):
                 'setup_time': setup_time
             })
 
-            if i < live_op_count - 1:
-                st.divider()
+    col_analyze, col_add = st.columns(2)
+    with col_analyze:
+        if st.button("🔍 Analyze", key='analyze_capacity_button', use_container_width=True):
+            current_time_days = ss.current_schedule['End_Time'].max() / 480 if not ss.current_schedule.empty else 0
+            release_time_min = current_time_days * 480
+            due_time_min = release_time_min + (live_due_days * 480)
 
-        st.divider()
+            new_job_ops = []
+            for i, op_config in enumerate(operations_config):
+                new_op_id = f'{live_job_id}_Op{i+1}'
+                new_op = {
+                    'Job_ID': live_job_id,
+                    'Operation_ID': new_op_id,
+                    'Op_Seq': i + 1,
+                    'Part_Type': f'NEW_{live_job_id}',
+                    'Quantity': live_quantity,
+                    'Op_Type': op_config['op_type'],
+                    'Mat_Type': op_config['material'],
+                    'Tool_Group': 'TGA',
+                    'Proc_Time_per_Unit': op_config['proc_time'],
+                    'Setup_Time': op_config['setup_time'],
+                    'Transfer_Min': 5,
+                    'Release_Day': current_time_days,
+                    'Due_Day': current_time_days + live_due_days,
+                    'Priority': live_priority,
+                    'Outsource_Flag': 'Y',
+                    'Vendor_Ref': 'V1' if 'V1' in ss.base_df_vendors['Vendor_ID'].values else None,
+                    'Release_Time_Min': release_time_min,
+                    'Due_Time_Min': due_time_min,
+                    'Total_Proc_Min': op_config['proc_time'] * live_quantity
+                }
+                new_job_ops.append(new_op)
 
-        col_analyze, col_add = st.columns(2)
-        with col_analyze:
-            if st.button("🔍 Analyze Capacity", key='analyze_capacity_button'):
-                current_time_days = ss.current_schedule['End_Time'].max() / 480 if not ss.current_schedule.empty else 0
-                release_time_min = current_time_days * 480
-                due_time_min = release_time_min + (live_due_days * 480)
+            new_eff_times = []
+            for op in new_job_ops:
+                eligible_machines = get_eligible_machines(op['Op_Type'])
+                if not eligible_machines:
+                    continue
 
-                new_job_ops = []
-                for i, op_config in enumerate(operations_config):
-                    new_op_id = f'{live_job_id}_Op{i+1}'
-                    new_op = {
-                        'Job_ID': live_job_id,
-                        'Operation_ID': new_op_id,
-                        'Op_Seq': i + 1,
-                        'Part_Type': f'NEW_{live_job_id}',
-                        'Quantity': live_quantity,
-                        'Op_Type': op_config['op_type'],
-                        'Mat_Type': op_config['material'],
-                        'Tool_Group': 'TGA',
-                        'Proc_Time_per_Unit': op_config['proc_time'],
-                        'Setup_Time': op_config['setup_time'],
-                        'Transfer_Min': 5,
-                        'Release_Day': current_time_days,
-                        'Due_Day': current_time_days + live_due_days,
-                        'Priority': live_priority,
-                        'Outsource_Flag': 'Y',
-                        'Vendor_Ref': 'V1' if 'V1' in ss.base_df_vendors['Vendor_ID'].values else None,
-                        'Release_Time_Min': release_time_min,
-                        'Due_Time_Min': due_time_min,
-                        'Total_Proc_Min': op_config['proc_time'] * live_quantity
-                    }
-                    new_job_ops.append(new_op)
+                for machine_id in eligible_machines:
+                    machine = ss.base_df_machines[ss.base_df_machines['Machine_ID'] == machine_id].iloc[0]
+                    speed_factor = float(machine['Speed Factor'])
+                    oee = float(machine['OEE (Uptime)'])
+                    effective_time = op['Total_Proc_Min'] * speed_factor * (1 / oee)
+                    total_time = effective_time + op['Setup_Time'] + op['Transfer_Min']
 
-                new_eff_times = []
-                for op in new_job_ops:
-                    eligible_machines = get_eligible_machines(op['Op_Type'])
-                    if not eligible_machines:
-                        continue
+                    new_eff_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': machine_id,
+                        'Effective_Proc_Time': effective_time,
+                        'Setup_Time': op['Setup_Time'],
+                        'Transfer_Min': op['Transfer_Min'],
+                        'Total_Time': total_time
+                    })
 
-                    for machine_id in eligible_machines:
-                        machine = ss.base_df_machines[ss.base_df_machines['Machine_ID'] == machine_id].iloc[0]
-                        speed_factor = float(machine['Speed Factor'])
-                        oee = float(machine['OEE (Uptime)'])
-                        effective_time = op['Total_Proc_Min'] * speed_factor * (1 / oee)
-                        total_time = effective_time + op['Setup_Time'] + op['Transfer_Min']
+            df_new_effective = pd.DataFrame(new_eff_times)
 
-                        new_eff_times.append({
-                            'Operation_ID': op['Operation_ID'],
-                            'Machine_ID': machine_id,
-                            'Effective_Proc_Time': effective_time,
-                            'Setup_Time': op['Setup_Time'],
-                            'Transfer_Min': op['Transfer_Min'],
-                            'Total_Time': total_time
-                        })
+            analysis = analyze_capacity_for_new_job(
+                new_job_ops,
+                ss.current_schedule,
+                ss.df_machines,
+                df_new_effective,
+                due_time_min
+            )
 
-                df_new_effective = pd.DataFrame(new_eff_times)
+            ss.live_job_analysis = analysis
+            ss.live_job_ops_pending = new_job_ops
+            ss.live_job_effective_pending = df_new_effective
+            st.rerun()
 
-                analysis = analyze_capacity_for_new_job(
-                    new_job_ops,
-                    ss.current_schedule,
-                    ss.df_machines,
-                    df_new_effective,
-                    due_time_min
-                )
-
-                ss.live_job_analysis = analysis
-                ss.live_job_ops_pending = new_job_ops
-                ss.live_job_effective_pending = df_new_effective
-                st.rerun()
-
-        # ----------------------------
-        # 🧩 DYNAMIC ANALYSIS DISPLAY
-        # ----------------------------
+        # Analysis results display
         if hasattr(ss, 'live_job_analysis') and ss.live_job_analysis:
             st.divider()
-            st.write("### 📊 Capacity Analysis Results")
-
             analysis = ss.live_job_analysis
-
-            live_current_makespan_min = ss.current_schedule['End_Time'].max() if not ss.current_schedule.empty else 0
-            live_current_makespan_days = live_current_makespan_min / 480
-
-            live_utilization = 0.0
-            if not ss.current_schedule.empty and live_current_makespan_min > 0:
-                total_productive = (ss.current_schedule['Setup_Time'].sum() +
-                                   ss.current_schedule['Proc_Time'].sum() +
-                                   ss.current_schedule['Transfer_Time'].sum())
-                total_machines = len(ss.df_machines)
-                live_utilization = (total_productive / (live_current_makespan_min * total_machines)) * 100
-
-            live_due_days = ss.get('live_due', 7)
-            new_job_time_days = analysis['metrics'].get('new_job_time_days', 0)
-            live_estimated_completion_days = live_current_makespan_days + new_job_time_days
-            live_due_date_days = live_current_makespan_days + live_due_days
-            live_buffer_days = live_due_date_days - live_estimated_completion_days
-            projected_utilization = analysis['metrics'].get('projected_utilization', 0)
-
+            
             if analysis['recommendation'] == 'SCHEDULE':
-                st.success("✅ **RECOMMENDATION: SCHEDULE IN-HOUSE**")
+                st.success("✅ Can schedule in-house")
             else:
-                st.error("❌ **RECOMMENDATION: OUTSOURCE**")
+                st.error("❌ Recommend outsourcing")
+            
+            st.caption(f"Completion: Day {analysis['metrics'].get('new_job_time_days', 0):.1f} • "
+                      f"Utilization: {analysis['metrics'].get('projected_utilization', 0):.1f}%")
 
-            st.write("**Current State (Live):**")
-            st.write(f"- Current makespan: Day {live_current_makespan_days:.1f}")
-            st.write(f"- Current utilization: {live_utilization:.1f}%")
+        with col_add:
+            if st.button("➕ Add Job", key='add_job_button', use_container_width=True, disabled=not hasattr(ss, 'live_job_analysis')):
+                # Validation check
+                job_id_to_add = ss.get('live_job_id', '') 
+                if job_id_to_add in ss.base_df_ops['Job_ID'].values:
+                    st.error(f"Job '{job_id_to_add}' exists!")
+                    st.stop()
 
-            st.write("**With New Job (Projected):**")
-            st.write(f"- Estimated completion: Day {live_estimated_completion_days:.1f}")
-            st.write(f"- Due date: Day {live_due_date_days:.1f}")
-            st.write(f"- Projected utilization: {projected_utilization:.1f}%")
+                with st.spinner(f"Adding job..."):
+                    current_time_days_add = ss.current_schedule['End_Time'].max() / 480 if not ss.current_schedule.empty else 0
+                    live_due_days_add = ss.get('live_due', 7) 
+                    new_release_time_min = current_time_days_add * 480
+                    new_due_time_min = new_release_time_min + (live_due_days_add * 480)
 
-            st.write("**Analysis:**")
-            if live_buffer_days < 0:
-                st.write(f"❌ Cannot meet deadline - Need {abs(live_buffer_days):.1f} more days")
-            else:
-                st.write(f"✅ Can meet deadline with {live_buffer_days:.1f} days buffer")
-
-            for reason in analysis['reasons']:
-                if "deadline" not in reason.lower() and "utilization" not in reason.lower():
-                    st.write(reason)
-            util_reason = next((r for r in analysis['reasons'] if "utilization" in r.lower()), None)
-            if util_reason:
-                st.write(util_reason)
-
-            with col_add:
-                if st.button("➕ Add Job", key='add_job_button', disabled=False):
+                    df_new_ops = pd.DataFrame(ss.live_job_ops_pending)
+                    df_new_ops['Job_ID'] = job_id_to_add 
+                    df_new_ops['Release_Day'] = current_time_days_add
+                    df_new_ops['Due_Day'] = current_time_days_add + live_due_days_add
+                    df_new_ops['Release_Time_Min'] = new_release_time_min
+                    df_new_ops['Due_Time_Min'] = new_due_time_min
                     
-                    # --- START FIX: VALIDATION CHECK ---
-                    
-                    # Get the Job ID the user typed in
-                    job_id_to_add = ss.get('live_job_id', '') 
-                    
-                    # Check if this Job_ID already exists in the base dataframe
-                    if job_id_to_add in ss.base_df_ops['Job_ID'].values:
-                        st.error(f"❌ Job ID '{job_id_to_add}' already exists. Please enter a unique Job ID.")
-                        st.stop() # Stop execution for this button press
-                        
-                    # --- END FIX ---
+                    if analysis['recommendation'] == 'OUTSOURCE':
+                        df_new_ops['Assignment_Type'] = 'OUTSOURCE'
+                        df_new_ops['Outsource_Cost'] = df_new_ops['Quantity'] * 5.0
+                        df_new_ops['Outsource_Time_Min'] = live_due_days_add * 480 * 0.8
+                    else:
+                        df_new_ops['Assignment_Type'] = 'IN_HOUSE'
+                        df_new_ops['Outsource_Cost'] = 0
+                        df_new_ops['Outsource_Time_Min'] = 0
 
-                    # If the check passed, continue with the rest of the logic
-                    with st.spinner(f"Adding {job_id_to_add} to schedule..."):
-                        
-                        current_time_days_add = ss.current_schedule['End_Time'].max() / 480 if not ss.current_schedule.empty else 0
-                        live_due_days_add = ss.get('live_due', 7) 
-                        new_release_time_min = current_time_days_add * 480
-                        new_due_time_min = new_release_time_min + (live_due_days_add * 480)
+                    ss.df_ops = pd.concat([ss.df_ops, df_new_ops], ignore_index=True)
+                    ss.base_df_ops = pd.concat([ss.base_df_ops, df_new_ops], ignore_index=True)
+                    ss.base_df_effective = pd.concat([ss.base_df_effective, ss.live_job_effective_pending], ignore_index=True)
 
-                        df_new_ops = pd.DataFrame(ss.live_job_ops_pending)
-                        
-                        # Set the Job_ID from the (now validated) widget
-                        df_new_ops['Job_ID'] = job_id_to_add 
+                    scheduler_new = CNCScheduler(ss.df_ops, ss.df_machines, ss.base_df_effective, ss.base_df_penalties)
+                    ss.current_schedule = scheduler_new.run_scheduling(heuristic=ss.current_heuristic)
 
-                        df_new_ops['Release_Day'] = current_time_days_add
-                        df_new_ops['Due_Day'] = current_time_days_add + live_due_days_add
-                        df_new_ops['Release_Time_Min'] = new_release_time_min
-                        df_new_ops['Due_Time_Min'] = new_due_time_min
-                        
-                        if analysis['recommendation'] == 'OUTSOURCE':
-                            df_new_ops['Assignment_Type'] = 'OUTSOURCE'
-                            df_new_ops['Outsource_Cost'] = df_new_ops['Quantity'] * 5.0
-                            df_new_ops['Outsource_Time_Min'] = live_due_days_add * 480 * 0.8
-                        else:
-                            df_new_ops['Assignment_Type'] = 'IN_HOUSE'
-                            df_new_ops['Outsource_Cost'] = 0
-                            df_new_ops['Outsource_Time_Min'] = 0
+                    del ss.live_job_analysis
+                    del ss.live_job_ops_pending
+                    del ss.live_job_effective_pending
 
-                        ss.df_ops = pd.concat([ss.df_ops, df_new_ops], ignore_index=True)
-                        ss.base_df_ops = pd.concat([ss.base_df_ops, df_new_ops], ignore_index=True)
-                        ss.base_df_effective = pd.concat([
-                            ss.base_df_effective,
-                            ss.live_job_effective_pending
-                        ], ignore_index=True)
-
-                        scheduler_new = CNCScheduler(
-                            ss.df_ops, ss.df_machines,
-                            ss.base_df_effective, ss.base_df_penalties
-                        )
-                        ss.current_schedule = scheduler_new.run_scheduling(heuristic=ss.current_heuristic)
-
-                        del ss.live_job_analysis
-                        del ss.live_job_ops_pending
-                        del ss.live_job_effective_pending
-
-                        st.cache_data.clear()
-                        safe_toast(f"✅ Job {job_id_to_add} added successfully!", icon="🎯")
-                    st.rerun()
-
-def draw_system_reset(ss):
-    if st.sidebar.button("🔄 Reset System to Original State"):
-        with st.spinner("Resetting system..."):
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            for key in list(ss.keys()):
-                del ss[key]
-            safe_toast("System reset!", icon="♻")
-        st.rerun()
-
-def draw_data_export(ss):
-    csv_data = export_schedule(ss.current_schedule)
-    safe_name = (ss.current_heuristic or "none").lower()
-    st.sidebar.download_button(
-        label="💾 Export Current Schedule (CSV)",
-        data=csv_data,
-        file_name=f"cnc_schedule_{safe_name}_current.csv",
-        mime='text/csv'
-    )
-
-def draw_breakdown_simulator(ss):
-    with st.sidebar.expander("🔧 Machine Breakdown Simulator"):
-        machine_list = ss.df_machines['Machine_ID'].unique()
-        bd_machine = st.selectbox("Machine:", machine_list, key='bd_machine')
-
-        st.sidebar.write("🧩 Min Start Time:", ss.current_schedule["Start_Time"].min() if not ss.current_schedule.empty else 0)
-        st.sidebar.write("🧩 Max End Time:", ss.current_schedule["End_Time"].max() if not ss.current_schedule.empty else 0)
-
-        max_slider_val = 60000
-        if not ss.current_schedule.empty:
-            max_slider_val = int(ss.current_schedule['End_Time'].max())
-
-        bd_start = st.slider("Breakdown Start (min):", 16320, max_slider_val, 60000, key='bd_start')
-        bd_duration = st.slider("Breakdown Duration (min):", 30, 1000, 120, key='bd_duration')
-
-        if st.button("Simulate Breakdown", key='bd_button'):
-            with st.spinner(f"Simulating breakdown for {bd_machine}..."):
-                df_machines_temp = ss.df_machines.copy()
-                bd_end = bd_start + bd_duration
-                machine_idx = df_machines_temp[df_machines_temp['Machine_ID'] == bd_machine].index
-
-                if not machine_idx.empty:
-                    idx = machine_idx[0]
-                    breakdown_window = {'start': bd_start, 'end': bd_end, 'duration': bd_duration}
-                    existing_maint = df_machines_temp.at[idx, 'Maintenance_Window']
-
-                    if existing_maint:
-                        st.warning(f"{bd_machine} already has maintenance. Overriding with breakdown.")
-                    df_machines_temp.at[idx, 'Maintenance_Window'] = breakdown_window
-
-                    # ✅ Persist updated data
-                    ss.df_machines = df_machines_temp.copy()
-                    ss.base_df_machines = df_machines_temp.copy()
-
-                    # ✅ Mark recomputation required
-                    ss.recalculate_all_heuristics = True
-                    ss.breakdown_pending = True
-                    ss.breakdown_message_visible = True
-                    ss.current_page = "comparison"  # Redirect user to heuristic comparison page
-
-                    # ✅ Clear caches to force fresh recalculation
                     st.cache_data.clear()
-                    st.cache_resource.clear()
-
-                    # ✅ User-facing messages
-                    st.success(f"🚨 Breakdown added for {bd_machine} "
-                               f"(Start={bd_start}, Duration={bd_duration} min).")
-                    st.info("💡 Please click **'🧪 Compute All Heuristics'** in the sidebar "
-                            "to recompute schedules and view updated recommendations.")
-
-                    # ✅ Toast notification for subtle visual feedback
-                    st.toast("⚙ Machine breakdown applied — ready for heuristic recomputation.", icon="⚙️")
-
-                    st.rerun()
-
-        # ✅ Persistent message display (after rerun)
-        if hasattr(ss, "breakdown_message_visible") and ss.breakdown_message_visible:
-            st.info("💡 Please click **'🧪 Compute All Heuristics'** in the sidebar "
-                    "to recompute schedules and view updated recommendations.")
-
-
-
-
-
-def draw_priority_manager(ss):
-    with st.sidebar.expander("⚡ Job Priority Manager"):
-        job_list = ss.df_ops['Job_ID'].unique()
-        priority_job = st.selectbox("Job ID:", job_list, key='priority_job')
-        new_priority = st.radio("New Priority:", [1, 2, 3], index=1, horizontal=True, key='priority_val')
-
-        if st.button("Update Priority", key='priority_button'):
-            with st.spinner(f"Updating {priority_job} to P{new_priority}..."):
-                # ✅ Update dataset priority
-                ss.df_ops.loc[ss.df_ops['Job_ID'] == priority_job, 'Priority'] = new_priority
-                ss.base_df_ops.loc[ss.base_df_ops['Job_ID'] == priority_job, 'Priority'] = new_priority
-
-                # ✅ Mark recomputation required
-                ss.triggered_by_priority_manager = True
-                ss.recalculate_all_heuristics = True
-                ss.breakdown_pending = True
-                ss.breakdown_message_visible = True   # <-- same variable as breakdown
-                ss.current_page = "comparison"
-
-                # ✅ Clean up caches
-                st.cache_data.clear()
-                st.cache_resource.clear()
-
-                st.success(f"✅ Priority for {priority_job} updated to P{new_priority}.")
-                st.toast("⚙ Priority changed — please recompute heuristics.", icon="⚙️")
-                trigger_recompute_prompt(ss, f"Priority for {priority_job} updated to P{new_priority}")
-        
-
+                    safe_toast(f"✅ Job {job_id_to_add} added!", icon="🎯")
                 st.rerun()
-
-    # ✅ Persistent message (same as breakdown)
-    if hasattr(ss, "breakdown_message_visible") and ss.breakdown_message_visible:
-        st.info("💡 Please click **'🧪 Compute All Heuristics'** in the sidebar "
-                "to recompute schedules and view updated recommendations.")
-
-
-def draw_outsourcing_policy(ss):
-    with st.sidebar.expander("💰 Outsourcing Policy"):
-        st.info("**EXPLAINER:** Adjust the cost threshold to control how aggressively operations are outsourced.\n\n"
-                "- Lower threshold (0.5–0.8): Mostly in-house\n"
-                "- Medium (0.9–1.1): Balanced\n"
-                "- High (1.2–1.5): More outsourcing")
-
-        new_threshold = st.slider(
-            "Cost Threshold:",
-            0.5, 1.5, ss.cost_threshold, 0.05, key='thresh_slider'
-        )
-
-        before_outsourced = (ss.df_ops["Assignment_Type"] == "OUTSOURCE").sum()
-        total_ops = len(ss.df_ops)
-        before_pct = (before_outsourced / total_ops * 100) if total_ops > 0 else 0
-        st.write(f"🔹 Current Outsourced: **{before_outsourced}/{total_ops} ({before_pct:.1f}%)**")
-
-        if st.button("Update Policy", key="thresh_button"):
-            with st.spinner("Updating Make-or-Buy decisions..."):
-                ss.cost_threshold = new_threshold
-
-                for idx, op in ss.df_ops.iterrows():
-                    decision, _, _ = make_or_buy_decision(op, ss.base_df_effective, cost_threshold=ss.cost_threshold)
-                    ss.df_ops.at[idx, "Assignment_Type"] = decision
-
-                ss.base_df_ops = ss.df_ops.copy()
-
-                after_outsourced = (ss.df_ops["Assignment_Type"] == "OUTSOURCE").sum()
-                after_pct = (after_outsourced / total_ops * 100) if total_ops > 0 else 0
-                change = after_outsourced - before_outsourced
-                direction = "increased" if change > 0 else "decreased"
-
-                st.success(
-                    f"💰 Outsourcing threshold set to **{ss.cost_threshold}**.\n"
-                    f"📊 Outsourced ops {direction} by **{abs(change)}** "
-                    f"({before_pct:.1f}% → {after_pct:.1f}%)."
-                )
-
-                # ✅ Persistent reminder + navigation
-                ss.triggered_by_outsourcing_policy = True
-                ss.recalculate_all_heuristics = True
-                ss.force_metric_refresh = True
-                ss.current_page = "comparison"
-                ss.outsourcing_update_message_visible = True
-                ss.outsourcing_update_time = time.time()
-
-                st.cache_data.clear()
-                st.cache_resource.clear()
-
-                st.toast("💼 Policy updated — please recompute heuristics.", icon="⚙️")
-                trigger_recompute_prompt(ss, f"Outsourcing Policy updated (threshold = {ss.cost_threshold})")
-
-                st.rerun()
-
-    # ✅ Persistent message shown until user recomputes or 2 minutes pass
-        if hasattr(ss, "outsourcing_update_message_visible") and ss.outsourcing_update_message_visible:
-            st.info(
-                "💡 Outsourcing policy updated. Click **'🧪 Compute All Heuristics'** in the sidebar "
-                "to recompute schedules and view updated heuristic comparison."
-            )
-            if time.time() - ss.get("outsourcing_update_time", 0) > 120:
-                ss.outsourcing_update_message_visible = False
-
-
 
 def draw_job_deleter(ss):
-    """
-    Adds a sidebar widget to delete an entire job (and all its operations)
-    from the dataset. Automatically updates the current schedule.
-    """
-    with st.sidebar.expander("Delete Job"):
-        
-        # 1. Get a list of all current jobs
-        all_jobs = sorted(ss.df_ops['Job_ID'].unique())
-        if len(all_jobs) == 0:
-            st.write("No jobs to delete.")
-            return
+    st.write("**🗑️ Delete Job**")
+    all_jobs = sorted(ss.df_ops['Job_ID'].unique())
+    
+    if len(all_jobs) == 0:
+        st.write("No jobs to delete.")
+        return
+    
+    job_to_delete = st.selectbox("Select job:", all_jobs, key='delete_job_select')
+    
+    if st.button("Delete", key='delete_job_button', type="secondary", use_container_width=True):
+        with st.spinner(f"Deleting {job_to_delete}..."):
+            # Find all operations to delete
+            ops_to_delete = ss.df_ops[ss.df_ops['Job_ID'] == job_to_delete]['Operation_ID'].unique()
+            
+            # Remove from dataframes
+            ss.df_ops = ss.df_ops[ss.df_ops['Job_ID'] != job_to_delete].copy()
+            ss.base_df_ops = ss.base_df_ops[ss.base_df_ops['Job_ID'] != job_to_delete].copy()
+            ss.base_df_effective = ss.base_df_effective[~ss.base_df_effective['Operation_ID'].isin(ops_to_delete)].copy()
+            
+            # Recompute schedule if heuristic is active
+            if ss.current_heuristic:
+                scheduler = CNCScheduler(ss.df_ops, ss.df_machines, ss.base_df_effective, ss.base_df_penalties)
+                ss.current_schedule = scheduler.run_scheduling(heuristic=ss.current_heuristic)
+            else:
+                ss.current_schedule = pd.DataFrame()
+                ss.recalculate_all_heuristics = True
+            
+            st.cache_data.clear()
+            safe_toast(f"✅ Deleted {job_to_delete}", icon="🗑️")
+        st.rerun()
 
-        # 2. Selectbox to choose job
-        job_to_delete = st.selectbox("Select Job to Delete:", all_jobs, key='job_delete_select')
-        
-        # 3. Warning
-        st.warning(f"⚠️ Deleting **{job_to_delete}** is permanent and will remove ALL its operations.")
-        
-        # 4. Button
-        if st.button("Delete This Entire Job", key='job_delete_button', type="primary"):
-            with st.spinner(f"Deleting {job_to_delete} and all its operations..."):
-                
-                # 5. Find all operations to delete (BEFORE deleting from df_ops)
-                ops_to_delete = ss.df_ops[ss.df_ops['Job_ID'] == job_to_delete]['Operation_ID'].unique()
-                
-                # 6. Remove from the working dataframe
-                ss.df_ops = ss.df_ops[ss.df_ops['Job_ID'] != job_to_delete].copy()
-                
-                # 7. Remove from the base dataframe for persistence
-                ss.base_df_ops = ss.base_df_ops[ss.base_df_ops['Job_ID'] != job_to_delete].copy()
-                
-                # 8. CRITICAL: Remove from the effective times dataframe
-                ss.base_df_effective = ss.base_df_effective[~ss.base_df_effective['Operation_ID'].isin(ops_to_delete)].copy()
+def draw_breakdown_simulator(ss):
+    st.write("**⚙️ Machine Breakdown**")
+    st.info("Simulate machine breakdowns (feature placeholder)")
 
-                st.success(f"✅ Deleted {job_to_delete} ({len(ops_to_delete)} operations removed).")
+def draw_priority_manager(ss):
+    st.write("**📊 Job Priority**")
+    all_jobs = sorted(ss.df_ops['Job_ID'].unique())
+    if len(all_jobs) == 0:
+        st.write("No jobs available")
+        return
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        job_sel = st.selectbox("Job:", all_jobs, key='priority_job')
+    with col2:
+        new_priority = st.radio("Priority:", [1, 2, 3, 4], horizontal=True, key='priority_val')
+    
+    if st.button("Update Priority", key='priority_btn', use_container_width=True):
+        ss.df_ops.loc[ss.df_ops['Job_ID'] == job_sel, 'Priority'] = new_priority
+        ss.base_df_ops.loc[ss.base_df_ops['Job_ID'] == job_sel, 'Priority'] = new_priority
+        safe_toast(f"✅ {job_sel} priority set to {new_priority}", icon="📊")
+        st.rerun()
 
-                # 9. Immediately recompute the *current* schedule
-                if not ss.current_heuristic:
-                    st.warning("No heuristic selected. Deleting data only.")
-                    ss.current_schedule = pd.DataFrame() # Clear schedule
-                    ss.recalculate_all_heurISTICS = True # Force user to compute
-                    ss.current_page = "comparison"
-                    st.rerun()
-                    return
+def draw_outsourcing_policy(ss):
+    st.write("**🏭 Outsourcing Threshold**")
+    threshold = st.slider(
+        "Complexity threshold:",
+        min_value=0.0,
+        max_value=2.0,
+        value=0.9,
+        step=0.1,
+        help="Ops with score > threshold get outsourced",
+        key='outsource_threshold'
+    )
+    st.caption(f"Current: {threshold} — Higher = more outsourcing")
 
-                st.write(f"🔄 Re-running {ss.current_heuristic} schedule...")
-
-                scheduler_new = CNCScheduler(
-                    ss.df_ops, # Use the just-updated df_ops
-                    ss.df_machines,
-                    ss.base_df_effective, # Use the just-updated df_effective
-                    ss.base_df_penalties
-                )
-                ss.current_schedule = scheduler_new.run_scheduling(heuristic=ss.current_heuristic)
-
-                st.cache_data.clear()
-                st.toast(f"✅ Job {job_to_delete} deleted. Schedule updated.", icon="🗑️")
-                
-                # 10. Rerun the app
-                st.rerun()
 # ---------------------------
 # Main page content functions
 # ---------------------------
@@ -1925,6 +1723,40 @@ def draw_kpi_dashboard(ss):
     col1.metric("Makespan (Days)", metrics['Makespan_Days'])
     col2.metric("Total Tardiness (Days)", metrics['Total_Tardiness_Days'])
     col3.metric("On-Time %", metrics['On_Time_%'])
+    
+    # --- AI-POWERED PERFORMANCE INSIGHTS ---
+    with st.expander("🤖 AI Performance Analysis & Recommendations", expanded=False):
+        if st.checkbox("Generate AI Insights", key='kpi_ai_insights'):
+            with st.spinner("🧠 Analyzing performance..."):
+                context = f"""
+                CURRENT SCHEDULE PERFORMANCE ({ss.current_heuristic}):
+                - Makespan: {metrics['Makespan_Days']:.2f} days
+                - Total Tardiness: {metrics['Total_Tardiness_Days']:.2f} days
+                - On-Time Delivery: {metrics['On_Time_%']:.1f}%
+                - Machine Utilization: {metrics['Machine_Utilization_%']:.1f}%
+                - Total Cost: ${metrics['Total_Cost_$']:.2f}
+                - Total Operations: {len(ss.df_ops)}
+                - Machines: {len(ss.df_machines)}
+                
+                Analyze this CNC manufacturing schedule and provide:
+                1. PERFORMANCE ASSESSMENT: Is this schedule optimal? (2-3 sentences)
+                2. TOP 3 BOTTLENECKS: What's limiting performance?
+                3. QUICK WINS: 2-3 actionable improvements
+                4. RISK ALERT: Any concerning metrics that need immediate attention?
+                
+                Be specific, actionable, and focused on manufacturing operations.
+                """
+                
+                insights = generate_ai_insights(
+                    "Provide detailed performance analysis and recommendations.",
+                    context_data=context
+                )
+                
+                if insights:
+                    st.markdown(insights)
+                    st.caption("💡 Analysis powered by Google Gemini AI")
+                else:
+                    st.info("💡 AI insights require `google-generativeai` package and valid API key in .env file")
 
 
 def draw_gantt_tab(ss):
@@ -1951,34 +1783,49 @@ def draw_operation_status_tab(ss):
     st.dataframe(status_table, use_container_width=True, height=500)
 
 def draw_comparison_tab(ss):
-    st.header("⚖ Heuristic Comparison")
+    
+    # === AI & SETTINGS SECTION ===
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        with st.expander("🤖 AI-Powered Analysis", expanded=False):
+            tab1, tab2 = st.tabs(["Dataset Quality", "Algorithm Insights"])
+            
+            with tab1:
+                if st.checkbox("Analyze Dataset Quality", key='ai_data_quality'):
+                    with st.spinner("🧠 Analyzing..."):
+                        df_ops = ss.base_df_ops
+                        context = f"""
+                        DATASET: {len(df_ops)} ops, {df_ops['Job_ID'].nunique()} jobs, {len(ss.df_machines)} machines
+                        Release: {df_ops['Release_Day'].min()}-{df_ops['Release_Day'].max()} days
+                        Due: {df_ops['Due_Day'].min()}-{df_ops['Due_Day'].max()} days
+                        Outsourced: {len(df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE'])}/{len(df_ops)} ({len(df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE'])/len(df_ops)*100:.1f}%)
+                        Lead time avg: {(df_ops['Due_Day'] - df_ops['Release_Day']).mean():.1f} days
+                        
+                        Provide: 1) Quality score 1-10, 2) Critical issues, 3) Optimization tips
+                        """
+                        insights = generate_ai_insights("Analyze CNC dataset quality", context_data=context)
+                        if insights:
+                            st.markdown(insights)
+                            st.caption("💡 Powered by Gemini AI")
+                        else:
+                            st.info("💡 Install `google-generativeai` and add API key to .env")
+            
+            with tab2:
+                st.info("Run 'Compute All Algorithms' first, then AI analysis will appear in results below")
+    
+    with col2:
+        with st.expander("⚖️ Priority Weights", expanded=False):
+            w_makespan = st.slider("Makespan", 0.0, 5.0, 1.0, 0.1, key='w_makespan')
+            w_tardiness = st.slider("Tardiness", 0.0, 5.0, 1.0, 0.1, key='w_tardiness')
+            w_ontime = st.slider("On-Time %", 0.0, 5.0, 1.0, 0.1, key='w_ontime')
+            w_util = st.slider("Utilization", 0.0, 5.0, 1.0, 0.1, key='w_util')
+            w_cost = st.slider("Cost", 0.0, 5.0, 1.0, 0.1, key='w_cost')
+            weights_sum = w_makespan + w_tardiness + w_ontime + w_util + w_cost
 
-    # --- Recommendation settings: allow user to set weights for multi-criteria ranking ---
-    with st.expander("⚖️ Recommendation Settings (weights)", expanded=False):
-        st.caption("Adjust weights to reflect business priorities. Higher weight = more important.")
-        cw1, cw2, cw3 = st.columns(3)
-        with cw1:
-            w_makespan = st.slider("Weight: Makespan", 0.0, 5.0, 1.0, 0.1, key='w_makespan')
-            w_tardiness = st.slider("Weight: Total Tardiness", 0.0, 5.0, 1.0, 0.1, key='w_tardiness')
-        with cw2:
-            w_ontime = st.slider("Weight: On-Time %", 0.0, 5.0, 1.0, 0.1, key='w_ontime')
-            w_util = st.slider("Weight: Machine Utilization %", 0.0, 5.0, 1.0, 0.1, key='w_util')
-        with cw3:
-            w_cost = st.slider("Weight: Total Cost", 0.0, 5.0, 1.0, 0.1, key='w_cost')
-
-        weights_sum = w_makespan + w_tardiness + w_ontime + w_util + w_cost
-        if weights_sum <= 0:
-            st.warning("Please set at least one non-zero weight to compute the composite recommendation.")
-
-    with st.expander("🔧 DEBUG INFO (Click to see state)"):
-        st.write(f"recalculate_all_heuristics flag: {getattr(ss, 'recalculate_all_heuristics', False)}")
-        st.write(f"force_metric_refresh flag: {getattr(ss, 'force_metric_refresh', False)}")
-        st.write(f"schedule_update_key: {ss.get('schedule_update_key', 'NOT SET')}")
-        st.write(f"Has df_metrics: {hasattr(ss, 'df_metrics')}")
-        if hasattr(ss, 'df_metrics'):
-            st.write(f"df_metrics shape: {ss.df_metrics.shape}")
-
-    st.info("**EXPLAINER**: This tab compares all 4 scheduling algorithms on the CURRENT dataset.")
+    st.divider()
+    
+    # === COMPARISON RESULTS ===
 
     # ✅ Automatically recompute metrics when dataset changes
     recalc_flag = st.session_state.get('recalculate_all_heuristics', False)
@@ -2007,74 +1854,61 @@ def draw_comparison_tab(ss):
                 st.write(traceback.format_exc())
                 ss.recalculate_all_heuristics = False
 
-    # ✅ Display comparison table and recommendation
+    # ✅ Display comparison results
     if hasattr(ss, 'df_metrics') and ss.df_metrics is not None and len(ss.df_metrics) > 0:
-        st.write("**Performance Comparison:**")
-        display_cols = [c for c in ss.df_metrics.columns if not c.startswith('_')]
         try:
-            st.dataframe(ss.df_metrics[display_cols], use_container_width=True)
-        except Exception as e:
-            st.error(f"Error displaying table: {str(e)}")
-
-        # ✅ Recommend best heuristic (lowest Total_Tardiness_Days)
-        try:
-            best_row = ss.df_metrics.sort_values('Total_Tardiness_Days').iloc[0]
-            st.success(f"🏆 Recommended heuristic (by lowest Total Tardiness): **{best_row['Heuristic']}**")
-            st.write("Recommendation details:")
-            st.write(best_row.to_dict())
-        except Exception:
-            pass
-
-        # --- Multi-criteria composite recommendation ---
-        try:
-            # Ensure numeric columns exist
+            # Calculate composite scores
             dfm = ss.df_metrics.copy()
             for col in ['Makespan_Days', 'Total_Tardiness_Days', 'On_Time_%', 'Machine_Utilization_%', 'Total_Cost_$']:
                 if col not in dfm.columns:
                     dfm[col] = 0.0
 
-            # Normalization helpers (map to 0..1)
+            # Normalize metrics (0-1 scale, higher is better)
             def norm(s):
-                mn = s.min()
-                mx = s.max()
-                if mx == mn:
-                    return pd.Series([0.5] * len(s), index=s.index)
-                return (s - mn) / (mx - mn)
+                mn, mx = s.min(), s.max()
+                return pd.Series([0.5] * len(s), index=s.index) if mx == mn else (s - mn) / (mx - mn)
 
-            # For metrics where lower is better, invert normalized value so higher is better
             n_makespan = 1.0 - norm(dfm['Makespan_Days'])
             n_tardiness = 1.0 - norm(dfm['Total_Tardiness_Days'])
             n_ontime = norm(dfm['On_Time_%'])
             n_util = norm(dfm['Machine_Utilization_%'])
             n_cost = 1.0 - norm(dfm['Total_Cost_$'])
 
-            # Composite score (weighted average)
+            # Weighted composite score
             total_weight = max(1e-9, (w_makespan + w_tardiness + w_ontime + w_util + w_cost))
-            dfm['Composite_Score'] = (
-                w_makespan * n_makespan
-                + w_tardiness * n_tardiness
-                + w_ontime * n_ontime
-                + w_util * n_util
-                + w_cost * n_cost
-            ) / total_weight
+            dfm['Score'] = (w_makespan * n_makespan + w_tardiness * n_tardiness + 
+                           w_ontime * n_ontime + w_util * n_util + w_cost * n_cost) / total_weight
 
-            st.markdown("**Composite ranking (higher = better):**")
-            st.dataframe(dfm.sort_values('Composite_Score', ascending=False).reset_index(drop=True), use_container_width=True)
+            # Display ranked table
+            dfm_display = dfm.sort_values('Score', ascending=False).reset_index(drop=True)
+            st.dataframe(dfm_display.style.highlight_max(subset=['Score'], color='lightgreen'), use_container_width=True)
 
-            best_composite = dfm.sort_values('Composite_Score', ascending=False).iloc[0]
-            st.success(f"🏅 Recommended heuristic (composite): **{best_composite['Heuristic']}** — score {best_composite['Composite_Score']:.3f}")
+            # Recommendation
+            best = dfm_display.iloc[0]
+            st.success(f"🏆 **Recommended: {best['Heuristic']}** (Score: {best['Score']:.3f}) — Makespan: {best['Makespan_Days']:.1f}d, Tardiness: {best['Total_Tardiness_Days']:.1f}d, On-Time: {best['On_Time_%']:.1f}%")
+
+            # AI Analysis (optional)
+            with st.expander("🤖 Why This Algorithm?", expanded=False):
+                if os.getenv('GEMINI_API_KEY') and st.checkbox("Enable AI Analysis", value=False, key='enable_gemini'):
+                    with st.spinner("Generating insights..."):
+                        try:
+                            import google.generativeai as genai
+                            genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+                            model = genai.GenerativeModel('gemini-pro')
+                            prompt = f"""Explain why {best['Heuristic']} (score {best['Score']:.3f}) is best for this CNC scheduling scenario:
+                            - Makespan: {best['Makespan_Days']:.1f}d, Tardiness: {best['Total_Tardiness_Days']:.1f}d, On-Time: {best['On_Time_%']:.1f}%
+                            - User priorities: Makespan={w_makespan}, Tardiness={w_tardiness}, On-Time={w_ontime}, Util={w_util}, Cost={w_cost}
+                            
+                            Provide: 1) Why it's optimal, 2) Business impact, 3) Trade-offs vs 2nd best. Be concise (3-4 sentences)."""
+                            st.markdown(model.generate_content(prompt).text)
+                        except Exception as e:
+                            st.warning(f"AI unavailable: {e}")
+                else:
+                    st.info("💡 **Quick Guide:**\n- **SPT**: Fast completion, good for throughput\n- **EDD**: Minimizes tardiness, best for deadlines\n- **CR**: Balances urgency and workload\n- **PRIORITY**: Follows business priorities")
+
         except Exception as e:
-            st.error(f"Error computing composite recommendation: {e}")
-
-        with st.expander("📖 Metrics Explained"):
-            st.markdown("""
-            - **Makespan_Days**: Total time to complete all operations (lower is better)
-            - **Total_Tardiness_Days**: Sum of all delays (lower is better)
-            - **Late_Operations**: Count of late deliveries (lower is better)
-            - **On_Time_%**: On-time delivery rate (higher is better)
-            - **Machine_Utilization_%**: Machine busy rate (higher is better)
-            - **Total_Cost_$**: Total cost (lower is better)
-            """)
+            st.error(f"Error computing recommendation: {e}")
+            
     else:
         st.info("📊 No comparison data yet. Click '🧪 Compute All Heuristics' in the sidebar to generate comparison results.")
 
@@ -2086,8 +1920,126 @@ def handle_error(e):
     st.code(traceback.format_exc())
 
 # ---------------------------
+# Diagnostic utility: compute realistic utilization metrics
+# ---------------------------
+def display_utilization_diagnostics(ss):
+    """
+    Diagnostic panel showing why utilization is low and what realistic targets are.
+    """
+    try:
+        st.markdown("### 🔍 Utilization Diagnostic Report")
+        
+        if not hasattr(ss, 'base_df_ops') or not hasattr(ss, 'base_df_machines'):
+            st.warning("Data not loaded yet. Initialize the app first.")
+            return
+        
+        df_ops = ss.base_df_ops.copy()
+        df_machines = ss.base_df_machines.copy()
+        
+        # Calculate total work content (productive time)
+        total_setup = df_ops['Setup_Time'].sum()
+        total_proc = df_ops['Total_Proc_Min'].sum()
+        total_transfer = df_ops.get('Transfer_Min', pd.Series([0]*len(df_ops))).sum()
+        total_productive_min = total_setup + total_proc + total_transfer
+        total_productive_days = total_productive_min / 480
+        
+        # Count operations by assignment
+        inhouse_ops = len(df_ops[df_ops['Assignment_Type'] == 'IN_HOUSE'])
+        outsourced_ops = len(df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE'])
+        total_ops = len(df_ops)
+        
+        # Machine count
+        num_machines = len(df_machines)
+        
+        # Calculate planning horizon
+        min_release = df_ops['Release_Day'].min()
+        max_due = df_ops['Due_Day'].max()
+        horizon_days = max_due - min_release
+        
+        # Theoretical utilization (if work was packed perfectly)
+        if horizon_days > 0 and num_machines > 0:
+            theoretical_util = (total_productive_days / (num_machines * horizon_days)) * 100
+        else:
+            theoretical_util = 0
+        
+        # Display metrics
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Operations", total_ops)
+        col1.metric("In-House Ops", inhouse_ops)
+        col1.metric("Outsourced Ops", outsourced_ops)
+        
+        col2.metric("Total Work Content", f"{total_productive_days:.1f} days")
+        col2.metric("Machine Count", num_machines)
+        col2.metric("Planning Horizon", f"{horizon_days:.1f} days")
+        
+        col3.metric("Theoretical Max Utilization", f"{theoretical_util:.1f}%")
+        col3.metric("Realistic Target", f"{theoretical_util * 0.7:.1f}%")
+        
+        st.divider()
+        
+        st.markdown("### 📋 Interpretation")
+        
+        if theoretical_util < 10:
+            st.error(f"""
+            ⚠️ **Very Low Utilization ({theoretical_util:.1f}%)**
+            
+            **Why this is happening:**
+            - You have {num_machines} machines available for {horizon_days:.1f} days = {num_machines * horizon_days:.1f} machine-days of capacity.
+            - But only {total_productive_days:.1f} days of actual work content.
+            - Even if perfectly packed, machines would be idle {100-theoretical_util:.1f}% of the time.
+            
+            **Recommended fixes:**
+            1. **Reduce machine count** to 2-3 machines (or use full dataset with more jobs).
+            2. **Reduce outsourcing** (adjust threshold in sidebar to keep more work in-house).
+            3. **Fix Release/Due dates** in your CSV (currently all Release_Day=33 but Due_Day=5-32).
+            4. **Load full dataset** (change SAMPLE_SIZE to None in code).
+            """)
+        elif theoretical_util < 30:
+            st.warning(f"""
+            ⚠️ **Low Utilization ({theoretical_util:.1f}%)**
+            
+            Your current workload can't fully utilize {num_machines} machines over {horizon_days:.1f} days.
+            
+            **Options:**
+            - Reduce machines to {int(num_machines * theoretical_util / 60) + 1}-{int(num_machines * theoretical_util / 50) + 1} to reach 50-60% utilization.
+            - Add more jobs or reduce outsourcing to increase in-house work content.
+            """)
+        elif theoretical_util < 70:
+            st.success(f"""
+            ✅ **Reasonable Utilization Range ({theoretical_util:.1f}%)**
+            
+            Your workload is balanced for the number of machines. Target realistic utilization: {theoretical_util * 0.7:.1f}%.
+            """)
+        else:
+            st.info(f"""
+            📊 **High Capacity Utilization ({theoretical_util:.1f}%)**
+            
+            Machines will be busy most of the time. Monitor for:
+            - Potential bottlenecks or delays.
+            - Need for overtime or additional capacity.
+            """)
+        
+        # Show breakdown by operation type
+        st.markdown("### 📊 Work Breakdown by Operation Type")
+        op_breakdown = df_ops.groupby('Op_Type').agg({
+            'Operation_ID': 'count',
+            'Total_Proc_Min': 'sum',
+            'Setup_Time': 'sum'
+        }).rename(columns={'Operation_ID': 'Count', 'Total_Proc_Min': 'Total_Proc_Min', 'Setup_Time': 'Total_Setup_Min'})
+        op_breakdown['Total_Time_Days'] = (op_breakdown['Total_Proc_Min'] + op_breakdown['Total_Setup_Min']) / 480
+        st.dataframe(op_breakdown, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"Error computing diagnostics: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+# ---------------------------
 # MAIN
 # ---------------------------
+# Configuration: Set to None to load full dataset (200 jobs), or specify number of jobs to sample
+SAMPLE_SIZE = None  # Load ALL 200 jobs for realistic utilization
+
 if 'recalculate_all_heuristics' not in st.session_state:
     st.session_state.recalculate_all_heuristics = False
 if 'force_metric_refresh' not in st.session_state:
@@ -2099,7 +2051,6 @@ def initialize_app(ss):
     st.cache_data.clear()
 
     with st.spinner("Loading and preprocessing data..."):
-        SAMPLE_SIZE = 50  # Change to None to use full dataset
         df_ops, df_machines, df_effective, df_penalties, df_vendors = load_all_data(sample_size=SAMPLE_SIZE)
         dbg("✅ DEBUG: Data loaded successfully")
         dbg(f"  - Jobs: {df_ops['Job_ID'].nunique()}, Operations: {len(df_ops)}")
@@ -2134,20 +2085,18 @@ def initialize_app(ss):
 
 
     st.info("🔎 Raw dataset loaded. Click 'Compute All Heuristics' in the sidebar to run scheduling on current data.")
-    st.toast("System initialized (raw data loaded).", icon="✅")
+    safe_toast("System initialized (raw data loaded).", icon="✅")
 
 def main():
-    st.title("🏭 Advanced CNC Job Scheduling System (Operation-Specific)")
-    st.success("✅ **VERSION 2.0 (Operation-Level)** - Job → Operation granularity applied")
-
+    st.set_page_config(page_title="CNC Scheduling", page_icon="🏭", layout="wide")
+    st.title("🏭 CNC Job Scheduling System")
+    
     if 'cache_version' not in st.session_state or st.session_state.cache_version < 2:
-        st.error("⚠️ **ACTION REQUIRED**: Old cached data detected! Click '🔄 Reset System' in the sidebar to apply fixes.")
         st.session_state.cache_version = 2
 
     ss = st.session_state
     if "current_page" not in ss:
-        ss.current_page = "comparison"  # default landing page
-
+        ss.current_page = "comparison"
 
     try:
         if 'initialized' not in ss:
@@ -2155,52 +2104,94 @@ def main():
         if 'schedule_update_key' not in ss:
             ss.schedule_update_key = str(time.time())
 
-        st.sidebar.title("Controls")
-        page = st.sidebar.radio(
-            "📋 Select Page",
-            ["Heuristic Comparison", "Selected Heuristic View"],
-            index=0 if ss.current_page == "comparison" else 1
-        )
-        ss.current_page = "comparison" if page == "Heuristic Comparison" else "heuristic_view"
-        st.sidebar.divider()
-
-        # New compute/apply controls
-        draw_compute_apply_controls(ss)
-        st.sidebar.divider()
-
-        # draw_heuristic_selector(ss)
-        # st.sidebar.divider()
-        draw_live_job_scheduler(ss)
-        st.sidebar.divider()
-        draw_system_reset(ss)
-        draw_data_export(ss)
-        st.sidebar.divider()
-        draw_breakdown_simulator(ss)
-        draw_priority_manager(ss)
-        draw_job_deleter(ss)
-        draw_outsourcing_policy(ss)
-
-        # Main view
-        # ---------------- MAIN PAGE ROUTING ----------------
-        if ss.current_page == "comparison":
-            st.title("⚖ Heuristic Comparison & Recommendation")
-            st.info("Compare all scheduling heuristics on the current dataset and choose the best one to apply.")
-            draw_comparison_tab(ss)
+        # ============ SIMPLIFIED SIDEBAR ============
+        with st.sidebar:
+            st.title("⚙️ Controls")
+            
+            # Page Navigation
+            page = st.radio(
+                "� Navigation",
+                ["📊 Compare Algorithms", "🔍 View Schedule"],
+                index=0 if ss.current_page == "comparison" else 1
+            )
+            ss.current_page = "comparison" if "Compare" in page else "heuristic_view"
+            
             st.divider()
-            st.markdown("### 💡 Once you choose a heuristic, go to 'Selected Heuristic View' from the sidebar to see details.")
+            
+            # Section 1: Compute & Apply
+            with st.expander("🎯 **1. Compute & Apply**", expanded=True):
+                if st.button("🧪 Compute All Algorithms", use_container_width=True):
+                    compute_all_heuristics_and_metrics(ss, show_progress=True)
+                    st.rerun()
+                
+                heuristic_options = ('SPT', 'EDD', 'CR', 'PRIORITY')
+                current_h = ss.get("current_heuristic")
+                current_index = heuristic_options.index(current_h) if current_h in heuristic_options else 0
+                
+                apply_choice = st.selectbox(
+                    "Select algorithm:", 
+                    heuristic_options,
+                    index=current_index,
+                    help="Choose which algorithm to apply to your schedule"
+                )
+                
+                if st.button("✅ Apply Algorithm", key='apply_heur', use_container_width=True):
+                    ok = apply_heuristic_to_dataset(ss, apply_choice)
+                    if ok:
+                        st.rerun()
+            
+            # Section 2: Manage Jobs
+            with st.expander("📋 **2. Manage Jobs**", expanded=False):
+                draw_live_job_scheduler(ss)
+                st.divider()
+                draw_job_deleter(ss)
+            
+            # Section 3: Advanced Settings
+            with st.expander("⚙️ **3. Advanced Settings**", expanded=False):
+                draw_breakdown_simulator(ss)
+                st.divider()
+                draw_priority_manager(ss)
+                st.divider()
+                draw_outsourcing_policy(ss)
+            
+            # Section 4: System
+            st.divider()
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Reset", use_container_width=True):
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                    for key in list(ss.keys()):
+                        del ss[key]
+                    st.rerun()
+            
+            with col2:
+                csv_data = export_schedule(ss.current_schedule)
+                safe_name = (ss.current_heuristic or "none").lower()
+                st.download_button(
+                    label="💾 Export",
+                    data=csv_data,
+                    file_name=f"schedule_{safe_name}.csv",
+                    mime='text/csv',
+                    use_container_width=True
+                )
+
+        # ============ MAIN CONTENT ============
+        if ss.current_page == "comparison":
+            st.header("📊 Algorithm Comparison")
+            draw_comparison_tab(ss)
         else:
-            st.title(f"📊 {ss.current_heuristic or 'No heuristic selected yet'} — Detailed View")
             if ss.current_heuristic:
+                st.header(f"📈 {ss.current_heuristic} Schedule")
                 draw_kpi_dashboard(ss)
-                tab1, tab2 = st.tabs(["📈 Gantt Chart", "📋 Operation Status"])
+                
+                tab1, tab2 = st.tabs(["📈 Gantt Chart", "📋 Operations"])
                 with tab1:
                     draw_gantt_tab(ss)
                 with tab2:
                     draw_operation_status_tab(ss)
             else:
-                st.warning("⚠️ No heuristic has been applied yet. Go to 'Heuristic Comparison' to choose one.")
-
-
+                st.warning("⚠️ No algorithm applied. Go to 'Compare Algorithms' to select one.")
 
     except Exception as e:
         handle_error(e)

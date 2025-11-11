@@ -1,0 +1,12 @@
+# Core dependencies
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+
+# AI/ML features
+google-generativeai>=0.3.0
+python-dotenv>=1.0.0
+
+# Optional enhancements
+openpyxl>=3.1.0  # For Excel export
