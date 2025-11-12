@@ -63,6 +63,127 @@ def safe_toast(message, icon=None):
             print(message)
 
 # ---------------------------
+# Activity Logging System
+# ---------------------------
+def log_action(ss, action_type, details=None):
+    """
+    Log user actions for audit trail and activity tracking.
+    
+    Args:
+        ss: Session state
+        action_type: Type of action (e.g., 'JOB_ADDED', 'BREAKDOWN_ADDED', 'PRIORITY_CHANGED')
+        details: Dictionary with action-specific details
+    """
+    import datetime
+    
+    if 'activity_log' not in ss:
+        ss.activity_log = []
+    
+    log_entry = {
+        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'action': action_type,
+        'details': details or {},
+        'user': 'System'  # Can be extended for multi-user support
+    }
+    
+    ss.activity_log.append(log_entry)
+    
+    # Keep only last 100 entries to avoid memory issues
+    if len(ss.activity_log) > 100:
+        ss.activity_log = ss.activity_log[-100:]
+
+def get_action_display_text(log_entry):
+    """Convert log entry to human-readable text."""
+    action = log_entry['action']
+    details = log_entry['details']
+    timestamp = log_entry['timestamp']
+    
+    action_messages = {
+        'JOB_ADDED': lambda d: f"➕ Added job {d.get('job_id', 'N/A')} with {d.get('op_count', 0)} operations (Priority: {d.get('priority', 'N/A')})",
+        'JOB_DELETED': lambda d: f"🗑️ Deleted job {d.get('job_id', 'N/A')} ({d.get('op_count', 0)} operations removed)",
+        'BREAKDOWN_ADDED': lambda d: f"🔧 Added breakdown to {d.get('machine', 'N/A')} on Day {d.get('day', 'N/A')} ({d.get('duration_min', 0)} min)",
+        'BREAKDOWNS_CLEARED': lambda d: f"🧹 Cleared all breakdowns ({d.get('machines_affected', 0)} machines reset)",
+        'PRIORITY_CHANGED': lambda d: f"📊 Changed priority for {d.get('job_id', 'N/A')}: {d.get('old_priority', 'N/A')} → {d.get('new_priority', 'N/A')}",
+        'OUTSOURCING_UPDATED': lambda d: f"🏭 Updated outsourcing threshold to {d.get('new_threshold', 'N/A')}",
+        'HEURISTIC_COMPUTED': lambda d: f"🧪 Computed {d.get('heuristic', 'N/A')} schedule ({d.get('ops_scheduled', 0)} operations)",
+        'HEURISTIC_APPLIED': lambda d: f"✅ Applied {d.get('heuristic', 'N/A')} schedule to dataset",
+        'DATA_LOADED': lambda d: f"📂 Loaded dataset ({d.get('total_ops', 0)} operations, {d.get('total_jobs', 0)} jobs)",
+    }
+    
+    message_func = action_messages.get(action, lambda d: f"• {action}: {d}")
+    message = message_func(details)
+    
+    return f"**{timestamp}** - {message}"
+
+def draw_activity_log(ss):
+    """Display activity log in a dedicated section."""
+    import datetime
+    
+    st.subheader("📜 Activity Log")
+    
+    if 'activity_log' not in ss or len(ss.activity_log) == 0:
+        st.info("No activities logged yet. Actions like adding jobs, breakdowns, or changing priorities will appear here.")
+        return
+    
+    # Filter options
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        show_count = st.selectbox("Show last:", [10, 25, 50, 100], index=1, key='log_show_count')
+    with col2:
+        filter_type = st.selectbox("Filter by:", ['All', 'Jobs', 'Breakdowns', 'Priority', 'Heuristics'], key='log_filter')
+    with col3:
+        if st.button("Clear Log", key='clear_log'):
+            ss.activity_log = []
+            st.rerun()
+    
+    # Filter logs
+    filtered_logs = ss.activity_log.copy()
+    
+    if filter_type == 'Jobs':
+        filtered_logs = [log for log in filtered_logs if 'JOB' in log['action']]
+    elif filter_type == 'Breakdowns':
+        filtered_logs = [log for log in filtered_logs if 'BREAKDOWN' in log['action']]
+    elif filter_type == 'Priority':
+        filtered_logs = [log for log in filtered_logs if 'PRIORITY' in log['action']]
+    elif filter_type == 'Heuristics':
+        filtered_logs = [log for log in filtered_logs if 'HEURISTIC' in log['action']]
+    
+    # Show latest entries (reversed for newest first)
+    display_logs = list(reversed(filtered_logs[-show_count:]))
+    
+    if not display_logs:
+        st.info(f"No {filter_type.lower()} activities found.")
+        return
+    
+    # Display logs
+    st.caption(f"Showing {len(display_logs)} of {len(ss.activity_log)} total entries")
+    
+    for log_entry in display_logs:
+        action_type = log_entry['action']
+        
+        # Color code by action type
+        if 'ADDED' in action_type or 'COMPUTED' in action_type:
+            st.success(get_action_display_text(log_entry), icon="✅")
+        elif 'DELETED' in action_type or 'CLEARED' in action_type:
+            st.warning(get_action_display_text(log_entry), icon="🗑️")
+        elif 'CHANGED' in action_type or 'UPDATED' in action_type:
+            st.info(get_action_display_text(log_entry), icon="🔄")
+        else:
+            st.markdown(get_action_display_text(log_entry))
+    
+    # Export option
+    if st.button("📥 Export Log as CSV", key='export_log'):
+        import pandas as pd
+        log_df = pd.DataFrame(ss.activity_log)
+        csv = log_df.to_csv(index=False)
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"activity_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+
+# ---------------------------
 # AI Helper Functions (Gemini)
 # ---------------------------
 def get_gemini_model():
@@ -71,8 +192,10 @@ def get_gemini_model():
         import google.generativeai as genai
         api_key = os.getenv('GEMINI_API_KEY')
         if api_key:
+            from google.generativeai import GenerativeModel
             genai.configure(api_key=api_key)
-            return genai.GenerativeModel('gemini-pro')
+            # Use gemini-1.5-flash (latest free model) instead of deprecated gemini-pro
+            return GenerativeModel("gemini-flash-latest")
         return None
     except ImportError:
         return None
@@ -260,7 +383,7 @@ def calculate_metrics(schedule_df, df_ops, heuristic_name):
     }
 
 def refresh_all_heuristics_metrics(ss):
-    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'BALANCED', 'DEADLINE_FIRST']
     metrics = []
 
     for heur in heuristics:
@@ -460,15 +583,38 @@ class CNCScheduler:
     def select_next_operation(self, available_ops, heuristic='SPT'):
         def safe_priority(op):
             return int(op.get('Priority', 3))
+        
+        def calculate_slack(op):
+            """Calculate slack time (Due - Current Time - Processing Time)"""
+            current_time = min(self.machine_availability.values())
+            slack = op['Due_Time_Min'] - current_time - op['Total_Proc_Min']
+            return max(slack, 0.1)  # Avoid division by zero
+        
+        def calculate_weighted_score(op):
+            """Balanced scoring combining multiple factors"""
+            # Normalize factors (lower is better for all)
+            priority_score = safe_priority(op) / 4.0  # Normalize 1-4 to 0.25-1.0
+            time_score = op['Total_Proc_Min'] / 500.0  # Normalize typical range
+            slack_score = calculate_slack(op) / 1000.0  # Normalize slack
+            
+            # Weighted combination (adjust weights based on business needs)
+            score = (0.4 * priority_score +  # 40% priority
+                    0.3 * slack_score +       # 30% urgency (slack)
+                    0.3 * time_score)         # 30% processing time
+            return score
 
         if heuristic == 'SPT':
-            rule = "SPT"
+            rule = "SPT (Shortest Processing Time)"
         elif heuristic == 'EDD':
-            rule = "EDD"
+            rule = "EDD (Earliest Due Date)"
         elif heuristic == 'CR':
-            rule = "CR"
+            rule = "CR (Critical Ratio)"
         elif heuristic == 'PRIORITY':
-            rule = "PRIORITY"
+            rule = "PRIORITY (Priority-Driven)"
+        elif heuristic == 'BALANCED':
+            rule = "BALANCED (Multi-Factor Weighted)"
+        elif heuristic == 'DEADLINE_FIRST':
+            rule = "DEADLINE_FIRST (Urgency-Focused)"
         else:
             rule = "SPT (Default)"
 
@@ -493,6 +639,18 @@ class CNCScheduler:
             op, earliest_start = min(
                 available_ops,
                 key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'])
+            )
+        elif heuristic == 'BALANCED':
+            # New: Multi-factor weighted scoring
+            op, earliest_start = min(
+                available_ops,
+                key=lambda x: calculate_weighted_score(x[0])
+            )
+        elif heuristic == 'DEADLINE_FIRST':
+            # New: Focus on preventing deadline misses
+            op, earliest_start = min(
+                available_ops,
+                key=lambda x: (safe_priority(x[0]), calculate_slack(x[0]), x[0]['Total_Proc_Min'])
             )
         else:
             op, earliest_start = min(
@@ -772,10 +930,13 @@ def load_all_data(sample_size=None, _cache_version=2):
     df_machines = df_machines.rename(columns={'Machine ID': 'Machine_ID'})
     df_machines['Maintenance_Window'] = df_machines['Scheduled Maintenance (Day, Time-Time)'].apply(parse_maintenance)
 
+    # Use session state cost threshold if available, otherwise default to 0.9
+    active_cost_threshold = st.session_state.get('cost_threshold', 0.9)
+    
     decisions = []
     for idx, op in df_ops.iterrows():
-        decision, cost, reason = make_or_buy_decision(op, df_effective, cost_threshold=0.9)
-        decisions.append({'Operation_ID': op['Operation_ID'], 'Decision': decision})
+        decision, cost, reason = make_or_buy_decision(op, df_effective, cost_threshold=active_cost_threshold)
+        decisions.append({'Operation_ID': op['Operation_ID'], 'Decision': decision, 'Reason': reason, 'Cost': cost})
 
     df_decisions = pd.DataFrame(decisions)
     df_ops = df_ops.merge(df_decisions, on='Operation_ID', how='left')
@@ -857,8 +1018,8 @@ def create_gantt_chart(
     if df_real.empty:
         return go.Figure().update_layout(
             title="No job data available",
-            xaxis_title="Time (minutes)",
-            yaxis_title="Machine",
+            xaxis=dict(title="Time (minutes)"),
+            yaxis=dict(title="Machine"),
         )
 
     x_min = df_real["Start_Time"].min()
@@ -900,45 +1061,65 @@ def create_gantt_chart(
             )
         )
 
+    # Draw maintenance/breakdown windows (supports multiple windows per machine)
     for _, machine in machines_df.iterrows():
         maint = machine.get("Maintenance_Window")
         machine_id = machine.get("Machine_ID")
-        if maint and "start" in maint and "end" in maint and machine_id in all_machines_sorted:
-            fig.add_shape(
-                type="rect",
-                x0=maint["start"] - x_min,
-                x1=maint["end"] - x_min,
-                y0=all_machines_sorted.index(machine_id) - 0.4,
-                y1=all_machines_sorted.index(machine_id) + 0.4,
-                fillcolor="rgba(255,0,0,0.25)",
-                line_width=0,
-                layer="below",
-            )
+        
+        if maint and machine_id in all_machines_sorted:
+            # Handle both single window (dict) and multiple windows (list)
+            windows = []
+            if isinstance(maint, dict) and maint:
+                windows = [maint]
+            elif isinstance(maint, list):
+                windows = [w for w in maint if isinstance(w, dict) and w]
+            
+            # Draw each maintenance/breakdown window
+            for window in windows:
+                if "start" in window and "end" in window:
+                    fig.add_shape(
+                        type="rect",
+                        x0=window["start"] - x_min,
+                        x1=window["end"] - x_min,
+                        y0=all_machines_sorted.index(machine_id) - 0.4,
+                        y1=all_machines_sorted.index(machine_id) + 0.4,
+                        fillcolor="rgba(255,0,0,0.25)",
+                        line=dict(color="red", width=2, dash="dash"),
+                        layer="below",
+                    )
+                    
+                    # Add label for breakdown window
+                    fig.add_annotation(
+                        x=(window["start"] + window["end"]) / 2 - x_min,
+                        y=all_machines_sorted.index(machine_id),
+                        text="🔧 DOWN",
+                        showarrow=False,
+                        font=dict(size=9, color="red", family="Arial Black"),
+                        bgcolor="rgba(255,255,255,0.7)",
+                    )
 
     pad = max((x_max - x_min) * 0.05, 100)
     fig.update_layout(
         title=dict(text=title, font=dict(size=16, color='black')),
-        xaxis_title=dict(text="Time (minutes, shifted)", font=dict(size=14, color='black')),
-        yaxis_title=dict(text="Machine", font=dict(size=14, color='black')),
+        xaxis=dict(
+            title=dict(text="Time (minutes, shifted)", font=dict(size=14, color='black')),
+            tickfont=dict(size=12, color='black'),
+            range=[0 - pad, (x_max - x_min) + pad],
+            showgrid=True
+        ),
+        yaxis=dict(
+            title=dict(text="Machine", font=dict(size=14, color='black')),
+            tickfont=dict(size=12, color='black'),
+            categoryorder="array",
+            categoryarray=all_machines_sorted,
+            autorange="reversed",
+            type="category"
+        ),
         height=600,
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=100, r=50, t=80, b=60),
         font=dict(size=12, color='black'),
-    )
-    fig.update_yaxes(
-        categoryorder="array",
-        categoryarray=all_machines_sorted,
-        autorange="reversed",
-        type="category",
-        tickfont=dict(size=12, color='black'),
-        titlefont=dict(size=14, color='black'),
-    )
-    fig.update_xaxes(
-        range=[0 - pad, (x_max - x_min) + pad], 
-        showgrid=True,
-        tickfont=dict(size=12, color='black'),
-        titlefont=dict(size=14, color='black'),
     )
     return fig
 
@@ -1223,6 +1404,12 @@ def compute_all_heuristics_and_metrics(ss, show_progress=True):
             schedules[heur] = schedule.copy()
             setattr(ss, schedule_key, schedule.copy())
             metrics.append(calculate_metrics(schedule.copy(), ss.base_df_ops.copy(), heur))
+            
+            # Log successful computation
+            log_action(ss, "HEURISTIC_COMPUTED", {
+                'heuristic': heur,
+                'ops_scheduled': len(schedule)
+            })
         except Exception as e:
             dbg(f"⚠️ compute_all failed for {heur}: {e}")
             existing = getattr(ss, schedule_key, pd.DataFrame())
@@ -1356,6 +1543,12 @@ def apply_heuristic_to_dataset(ss, heuristic):
             ss.df_metrics = pd.DataFrame([metrics_df])
 
         st.success(f"📈 KPI metrics updated for {heuristic}.")
+        
+        # Log the action
+        log_action(ss, "HEURISTIC_APPLIED", {
+            'heuristic': heuristic,
+            'ops_applied': len(ss.current_schedule)
+        })
     except Exception as e:
         st.error(f"❌ Failed to update KPI metrics for {heuristic}: {e}")
 
@@ -1614,6 +1807,15 @@ def draw_live_job_scheduler(ss):
                     ss.base_df_ops = pd.concat([ss.base_df_ops, df_new_ops], ignore_index=True)
                     ss.base_df_effective = pd.concat([ss.base_df_effective, ss.live_job_effective_pending], ignore_index=True)
 
+                    # Log the action
+                    log_action(ss, "JOB_ADDED", {
+                        'job_id': job_id_to_add,
+                        'op_count': len(df_new_ops),
+                        'priority': df_new_ops.iloc[0].get('Priority', 'N/A'),
+                        'due_days': live_due_days_add,
+                        'assignment': analysis['recommendation']
+                    })
+
                     scheduler_new = CNCScheduler(ss.df_ops, ss.df_machines, ss.base_df_effective, ss.base_df_penalties)
                     ss.current_schedule = scheduler_new.run_scheduling(heuristic=ss.current_heuristic)
 
@@ -1639,11 +1841,18 @@ def draw_job_deleter(ss):
         with st.spinner(f"Deleting {job_to_delete}..."):
             # Find all operations to delete
             ops_to_delete = ss.df_ops[ss.df_ops['Job_ID'] == job_to_delete]['Operation_ID'].unique()
+            op_count = len(ops_to_delete)
             
             # Remove from dataframes
             ss.df_ops = ss.df_ops[ss.df_ops['Job_ID'] != job_to_delete].copy()
             ss.base_df_ops = ss.base_df_ops[ss.base_df_ops['Job_ID'] != job_to_delete].copy()
             ss.base_df_effective = ss.base_df_effective[~ss.base_df_effective['Operation_ID'].isin(ops_to_delete)].copy()
+            
+            # Log the action
+            log_action(ss, "JOB_DELETED", {
+                'job_id': job_to_delete,
+                'op_count': op_count
+            })
             
             # Recompute schedule if heuristic is active
             if ss.current_heuristic:
@@ -1658,8 +1867,146 @@ def draw_job_deleter(ss):
         st.rerun()
 
 def draw_breakdown_simulator(ss):
-    st.write("**⚙️ Machine Breakdown**")
-    st.info("Simulate machine breakdowns (feature placeholder)")
+    st.write("**⚙️ Machine Breakdown Simulator**")
+    
+    # Get list of machines
+    available_machines = sorted(ss.df_machines['Machine_ID'].unique())
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        breakdown_machine = st.selectbox("Machine:", available_machines, key='breakdown_machine')
+    with col2:
+        input_mode = st.radio("Input Mode:", ["Day & Hour", "Minutes"], key='breakdown_input_mode', horizontal=True)
+    
+    if input_mode == "Day & Hour":
+        col3, col4 = st.columns(2)
+        with col3:
+            breakdown_day = st.number_input("Day:", min_value=1, max_value=50, value=10, step=1, key='breakdown_day')
+            breakdown_start_hour = st.number_input("Start Hour (8-16):", min_value=8, max_value=16, value=10, step=1, key='breakdown_start')
+        with col4:
+            breakdown_duration = st.number_input("Duration (hours):", min_value=1, max_value=8, value=2, step=1, key='breakdown_duration')
+        
+        # Calculate minutes
+        MINUTES_PER_WORKDAY = 8 * 60
+        start_min_in_day = (breakdown_start_hour - 8) * 60
+        start_time_min = (breakdown_day - 1) * MINUTES_PER_WORKDAY + start_min_in_day
+        duration_min = breakdown_duration * 60
+        
+        st.caption(f"📊 Breakdown window: {start_time_min} to {start_time_min + duration_min} minutes")
+    else:
+        col3, col4 = st.columns(2)
+        with col3:
+            start_time_min = st.number_input("Start Time (minutes):", min_value=0, max_value=50000, value=10000, step=100, key='breakdown_start_min')
+        with col4:
+            duration_min = st.number_input("Duration (minutes):", min_value=60, max_value=480, value=120, step=60, key='breakdown_duration_min')
+        
+        # Calculate day/hour for display
+        breakdown_day = (start_time_min // 480) + 1
+        start_hour = 8 + ((start_time_min % 480) // 60)
+        end_min = start_time_min + duration_min
+        end_hour = 8 + ((end_min % 480) // 60)
+        
+        st.caption(f"📊 Equivalent to: Day {breakdown_day}, Hour {start_hour}:00-{end_hour}:00")
+    
+    if st.button("🔧 Add Breakdown", key='add_breakdown_btn', use_container_width=True):
+        # Calculate breakdown window in minutes
+        end_time_min = start_time_min + duration_min
+        
+        # Create breakdown window
+        breakdown_window = {
+            'start': start_time_min,
+            'end': end_time_min,
+            'duration': duration_min
+        }
+        
+        # Update machine dataframe
+        machine_idx = ss.df_machines[ss.df_machines['Machine_ID'] == breakdown_machine].index[0]
+        
+        # Get existing maintenance windows
+        existing_maintenance = ss.df_machines.loc[machine_idx, 'Maintenance_Window']
+        
+        # Append new breakdown to existing windows (convert to list)
+        if existing_maintenance is None or (isinstance(existing_maintenance, dict) and not existing_maintenance):
+            new_maintenance = [breakdown_window]
+        elif isinstance(existing_maintenance, dict):
+            new_maintenance = [existing_maintenance, breakdown_window]
+        elif isinstance(existing_maintenance, list):
+            new_maintenance = existing_maintenance + [breakdown_window]
+        else:
+            new_maintenance = [breakdown_window]
+        
+        # Update both working and base dataframes - use .at[] to avoid ValueError with lists
+        ss.df_machines.at[machine_idx, 'Maintenance_Window'] = new_maintenance
+        ss.base_df_machines.at[machine_idx, 'Maintenance_Window'] = new_maintenance
+        
+        # Set flag to recompute all heuristics
+        ss.recalculate_all_heuristics = True
+        ss.breakdown_pending = True
+        
+        # Log the action
+        log_action(ss, "BREAKDOWN_ADDED", {
+            'machine': breakdown_machine,
+            'start_min': start_time_min,
+            'end_min': end_time_min,
+            'duration_min': duration_min,
+            'day': (start_time_min // 480) + 1
+        })
+        
+        # Calculate display values
+        display_day = (start_time_min // 480) + 1
+        display_start_hour = 8 + ((start_time_min % 480) // 60)
+        display_end_hour = 8 + ((end_time_min % 480) // 60)
+        
+        st.success(f"✅ Breakdown added to {breakdown_machine}:")
+        st.info(f"   📅 Day {display_day}, {display_start_hour}:00-{display_end_hour}:00\n"
+                f"   ⏱️ Minutes: {start_time_min} to {end_time_min} ({duration_min} min)")
+        st.info("💡 Click **'🧪 Compute All Heuristics'** to see updated schedules with breakdown impact")
+        
+        safe_toast(f"⚙️ Breakdown registered for {breakdown_machine}", icon="🔧")
+    
+    # Show current breakdowns/maintenance
+    if st.checkbox("Show Current Maintenance/Breakdowns", key='show_breakdowns'):
+        st.caption("**Current Maintenance/Breakdown Windows:**")
+        for _, machine in ss.df_machines.iterrows():
+            machine_id = machine['Machine_ID']
+            maintenance = machine.get('Maintenance_Window', None)
+            
+            if maintenance and maintenance is not None:
+                if isinstance(maintenance, dict) and maintenance:
+                    windows = [maintenance]
+                elif isinstance(maintenance, list):
+                    windows = maintenance
+                else:
+                    windows = []
+                
+                if windows:
+                    st.write(f"**{machine_id}:**")
+                    for i, window in enumerate(windows):
+                        start_min = window.get('start', 0)
+                        end_min = window.get('end', 0)
+                        start_day = (start_min // 480) + 1
+                        start_hour = 8 + ((start_min % 480) // 60)
+                        end_hour = 8 + ((end_min % 480) // 60)
+                        st.caption(f"  • Day {start_day}, {start_hour}:00-{end_hour}:00 ({(end_min - start_min) // 60}h)")
+        
+        if st.button("🗑️ Clear All Breakdowns", key='clear_breakdowns'):
+            # Reset maintenance to original (from CSV)
+            cleared_count = 0
+            for idx, machine in ss.df_machines.iterrows():
+                machine_id = machine['Machine_ID']
+                # Parse original maintenance from CSV column
+                original_maint_str = machine.get('Scheduled Maintenance (Day, Time-Time)', 'None')
+                parsed_maint = parse_maintenance(original_maint_str)
+                ss.df_machines.at[idx, 'Maintenance_Window'] = parsed_maint
+                ss.base_df_machines.at[idx, 'Maintenance_Window'] = parsed_maint
+                cleared_count += 1
+            
+            # Log the action
+            log_action(ss, "BREAKDOWNS_CLEARED", {'machines_affected': cleared_count})
+            
+            ss.recalculate_all_heuristics = True
+            st.success("✅ All dynamic breakdowns cleared. Reverted to original maintenance schedule.")
+            st.rerun()
 
 def draw_priority_manager(ss):
     st.write("**📊 Job Priority**")
@@ -1675,23 +2022,59 @@ def draw_priority_manager(ss):
         new_priority = st.radio("Priority:", [1, 2, 3, 4], horizontal=True, key='priority_val')
     
     if st.button("Update Priority", key='priority_btn', use_container_width=True):
+        # Get old priority for logging
+        old_priority = ss.df_ops[ss.df_ops['Job_ID'] == job_sel]['Priority'].iloc[0] if len(ss.df_ops[ss.df_ops['Job_ID'] == job_sel]) > 0 else 'N/A'
+        
         ss.df_ops.loc[ss.df_ops['Job_ID'] == job_sel, 'Priority'] = new_priority
         ss.base_df_ops.loc[ss.base_df_ops['Job_ID'] == job_sel, 'Priority'] = new_priority
+        
+        # Log the action
+        log_action(ss, "PRIORITY_CHANGED", {
+            'job_id': job_sel,
+            'old_priority': old_priority,
+            'new_priority': new_priority
+        })
+        
         safe_toast(f"✅ {job_sel} priority set to {new_priority}", icon="📊")
         st.rerun()
 
 def draw_outsourcing_policy(ss):
-    st.write("**🏭 Outsourcing Threshold**")
+    st.write("**🏭 Outsourcing Cost Threshold**")
     threshold = st.slider(
-        "Complexity threshold:",
-        min_value=0.0,
-        max_value=2.0,
-        value=0.9,
-        step=0.1,
-        help="Ops with score > threshold get outsourced",
-        key='outsource_threshold'
+        "Cost threshold (vendor must be < threshold × in-house cost):",
+        min_value=0.5,
+        max_value=1.0,
+        value=ss.get('cost_threshold', 0.9),
+        step=0.05,
+        help="Lower value = less outsourcing. E.g., 0.8 means outsource only if vendor is <80% of in-house cost",
+        key='outsource_threshold_slider'
     )
-    st.caption(f"Current: {threshold} — Higher = more outsourcing")
+    
+    if st.button("Apply Threshold", key='apply_threshold'):
+        ss.cost_threshold = threshold
+        log_action(ss, "OUTSOURCING_UPDATED", {
+            'threshold': threshold,
+            'description': f"Cost threshold set to {threshold:.0%}"
+        })
+        st.success(f"✅ Cost threshold updated to {threshold:.0%}. Recompute algorithms to apply changes.")
+        st.rerun()
+    
+    st.caption(f"**Current:** {ss.get('cost_threshold', 0.9):.0%} — Lower = More In-House")
+    
+    # Quick recommendations
+    with st.expander("📊 Threshold Impact Guide"):
+        st.markdown("""
+        **Recommended Thresholds:**
+        - **50-60%**: Maximum in-house utilization (only outsource if vendor is 50% cheaper)
+        - **70-80%**: Balanced approach (recommended for reducing current 63% outsourcing)
+        - **90-95%**: Cost-focused (current setting - high outsourcing)
+        - **100%**: Outsource at cost parity
+        
+        **Current Issue**: At 90%, you're outsourcing whenever vendor is slightly cheaper, 
+        ignoring the value of keeping work in-house (overhead absorption, quality control).
+        
+        **Recommendation**: Start with **75%** and monitor results.
+        """)
 
 # ---------------------------
 # Main page content functions
@@ -1723,6 +2106,27 @@ def draw_kpi_dashboard(ss):
     col1.metric("Makespan (Days)", metrics['Makespan_Days'])
     col2.metric("Total Tardiness (Days)", metrics['Total_Tardiness_Days'])
     col3.metric("On-Time %", metrics['On_Time_%'])
+    
+    # Show breakdown/maintenance impact
+    total_breakdown_time = 0
+    machines_with_breakdowns = []
+    for _, machine in ss.df_machines.iterrows():
+        maint = machine.get('Maintenance_Window')
+        if maint:
+            windows = []
+            if isinstance(maint, dict) and maint:
+                windows = [maint]
+            elif isinstance(maint, list):
+                windows = [w for w in maint if isinstance(w, dict) and w]
+            
+            if windows:
+                machines_with_breakdowns.append(machine['Machine_ID'])
+                for window in windows:
+                    total_breakdown_time += window.get('duration', 0)
+    
+    if machines_with_breakdowns:
+        st.info(f"🔧 **Breakdown Impact**: {len(machines_with_breakdowns)} machine(s) have maintenance/breakdown windows "
+                f"({', '.join(machines_with_breakdowns)}) — Total downtime: {total_breakdown_time/60:.1f} hours")
     
     # --- AI-POWERED PERFORMANCE INSIGHTS ---
     with st.expander("🤖 AI Performance Analysis & Recommendations", expanded=False):
@@ -1795,12 +2199,32 @@ def draw_comparison_tab(ss):
                 if st.checkbox("Analyze Dataset Quality", key='ai_data_quality'):
                     with st.spinner("🧠 Analyzing..."):
                         df_ops = ss.base_df_ops
+                        
+                        # Calculate breakdown info
+                        total_breakdown_hours = 0
+                        machines_with_breakdowns = []
+                        for _, machine in ss.df_machines.iterrows():
+                            maint = machine.get('Maintenance_Window')
+                            if maint:
+                                windows = []
+                                if isinstance(maint, dict) and maint:
+                                    windows = [maint]
+                                elif isinstance(maint, list):
+                                    windows = [w for w in maint if isinstance(w, dict) and w]
+                                
+                                if windows:
+                                    machines_with_breakdowns.append(machine['Machine_ID'])
+                                    for window in windows:
+                                        total_breakdown_hours += window.get('duration', 0) / 60
+                        
+                        breakdown_info = f"\nBreakdowns/Maintenance: {len(machines_with_breakdowns)} machine(s), {total_breakdown_hours:.1f} total hours" if machines_with_breakdowns else "\nBreakdowns/Maintenance: None"
+                        
                         context = f"""
                         DATASET: {len(df_ops)} ops, {df_ops['Job_ID'].nunique()} jobs, {len(ss.df_machines)} machines
                         Release: {df_ops['Release_Day'].min()}-{df_ops['Release_Day'].max()} days
                         Due: {df_ops['Due_Day'].min()}-{df_ops['Due_Day'].max()} days
                         Outsourced: {len(df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE'])}/{len(df_ops)} ({len(df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE'])/len(df_ops)*100:.1f}%)
-                        Lead time avg: {(df_ops['Due_Day'] - df_ops['Release_Day']).mean():.1f} days
+                        Lead time avg: {(df_ops['Due_Day'] - df_ops['Release_Day']).mean():.1f} days{breakdown_info}
                         
                         Provide: 1) Quality score 1-10, 2) Critical issues, 3) Optimization tips
                         """
@@ -1893,8 +2317,7 @@ def draw_comparison_tab(ss):
                     with st.spinner("Generating insights..."):
                         try:
                             import google.generativeai as genai
-                            genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-                            model = genai.GenerativeModel('gemini-pro')
+                            model = get_gemini_model()
                             prompt = f"""Explain why {best['Heuristic']} (score {best['Score']:.3f}) is best for this CNC scheduling scenario:
                             - Makespan: {best['Makespan_Days']:.1f}d, Tardiness: {best['Total_Tardiness_Days']:.1f}d, On-Time: {best['On_Time_%']:.1f}%
                             - User priorities: Makespan={w_makespan}, Tardiness={w_tardiness}, On-Time={w_ontime}, Util={w_util}, Cost={w_cost}
@@ -1911,6 +2334,183 @@ def draw_comparison_tab(ss):
             
     else:
         st.info("📊 No comparison data yet. Click '🧪 Compute All Heuristics' in the sidebar to generate comparison results.")
+
+# ---------------------------
+# Outsourcing & Machine Utilization Analysis
+# ---------------------------
+def draw_outsourcing_analysis(ss):
+    """
+    Analyzes why operations are being outsourced and provides AI-powered recommendations
+    to reduce outsourcing and improve machine utilization.
+    """
+    st.header("🏭 Outsourcing & Machine Utilization Analysis")
+    
+    # Get outsourcing statistics
+    total_ops = len(ss.df_ops)
+    outsourced_ops = ss.df_ops[ss.df_ops['Assignment_Type'] == 'OUTSOURCE']
+    inhouse_ops = ss.df_ops[ss.df_ops['Assignment_Type'] == 'IN_HOUSE']
+    outsource_count = len(outsourced_ops)
+    outsource_pct = (outsource_count / total_ops) * 100 if total_ops > 0 else 0
+    
+    # Display summary metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Operations", total_ops)
+    col2.metric("Outsourced", f"{outsource_count} ({outsource_pct:.1f}%)")
+    col3.metric("In-House", f"{len(inhouse_ops)} ({100-outsource_pct:.1f}%)")
+    
+    if outsource_pct > 50:
+        st.error(f"⚠️ **HIGH OUTSOURCING ALERT**: {outsource_pct:.1f}% of operations are outsourced!")
+    elif outsource_pct > 30:
+        st.warning(f"⚠️ **MODERATE OUTSOURCING**: {outsource_pct:.1f}% of operations are outsourced")
+    else:
+        st.success(f"✅ **HEALTHY OUTSOURCING LEVEL**: {outsource_pct:.1f}% of operations are outsourced")
+    
+    # Machine utilization analysis
+    st.subheader("🔧 Machine Utilization Breakdown")
+    
+    if not ss.current_schedule.empty:
+        machine_stats = []
+        for machine_id in ss.df_machines['Machine_ID'].unique():
+            machine_ops = ss.current_schedule[ss.current_schedule['Machine_ID'] == machine_id]
+            job_count = len(machine_ops)
+            
+            # Calculate operation types
+            op_types = []
+            for op_id in machine_ops['Operation_ID'].unique():
+                op_data = ss.df_ops[ss.df_ops['Operation_ID'] == op_id]
+                if not op_data.empty:
+                    op_types.append(op_data.iloc[0].get('Op_Type', 'N/A'))
+            
+            unique_op_types = list(set(op_types))
+            
+            machine_stats.append({
+                'Machine': machine_id,
+                'Jobs': job_count,
+                'Operation Types': ', '.join(unique_op_types) if unique_op_types else 'None',
+                'Total Time (hrs)': (machine_ops['Setup_Time'].sum() + 
+                                     machine_ops['Proc_Time'].sum() + 
+                                     machine_ops['Transfer_Time'].sum()) / 60 if job_count > 0 else 0
+            })
+        
+        machine_df = pd.DataFrame(machine_stats).sort_values('Jobs', ascending=False)
+        st.dataframe(machine_df, use_container_width=True)
+        
+        # Highlight low-utilization machines
+        low_util_machines = machine_df[machine_df['Jobs'] <= 1]
+        if not low_util_machines.empty:
+            st.warning(f"⚠️ **Underutilized Machines**: {', '.join(low_util_machines['Machine'].tolist())} have very few jobs assigned")
+    
+    # Outsourcing reasons breakdown
+    st.subheader("📋 Why Are Operations Outsourced?")
+    
+    if outsource_count > 0:
+        # Group by operation type
+        outsource_by_type = outsourced_ops.groupby('Op_Type').size().reset_index(name='Count')
+        outsource_by_type['Percentage'] = (outsource_by_type['Count'] / outsource_count * 100).round(1)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**By Operation Type:**")
+            st.dataframe(outsource_by_type, use_container_width=True)
+        
+        with col2:
+            st.write("**By Priority:**")
+            outsource_by_priority = outsourced_ops.groupby('Priority').size().reset_index(name='Count')
+            st.dataframe(outsource_by_priority, use_container_width=True)
+        
+        # Cost analysis
+        if 'Outsource_Cost' in outsourced_ops.columns:
+            total_outsource_cost = outsourced_ops['Outsource_Cost'].sum()
+            avg_outsource_cost = outsourced_ops['Outsource_Cost'].mean()
+            
+            st.metric("Total Outsourcing Cost", f"${total_outsource_cost:,.2f}")
+            st.metric("Average Cost per Operation", f"${avg_outsource_cost:,.2f}")
+    
+    # AI-Powered Analysis
+    st.divider()
+    with st.expander("🤖 AI-Powered Outsourcing Analysis", expanded=True):
+        if st.button("Generate Detailed Analysis", key='outsource_ai_analysis'):
+            with st.spinner("🧠 Analyzing outsourcing patterns..."):
+                # Prepare context
+                machine_capacity = {}
+                for machine_id in ss.df_machines['Machine_ID'].unique():
+                    eligible_ops = []
+                    for op_type in ['MILLING', 'TURNING', 'GRINDING', 'DRILLING']:
+                        if machine_id in get_eligible_machines(op_type):
+                            eligible_ops.append(op_type)
+                    machine_capacity[machine_id] = eligible_ops
+                
+                context = f"""
+                CNC MANUFACTURING OUTSOURCING ANALYSIS:
+                
+                CURRENT STATE:
+                - Total Operations: {total_ops}
+                - Outsourced: {outsource_count} ({outsource_pct:.1f}%)
+                - In-House: {len(inhouse_ops)} ({100-outsource_pct:.1f}%)
+                - Total Outsourcing Cost: ${outsourced_ops['Outsource_Cost'].sum() if 'Outsource_Cost' in outsourced_ops.columns else 0:,.2f}
+                
+                MACHINE CAPABILITIES:
+                {chr(10).join([f"- {m}: {', '.join(ops)}" for m, ops in machine_capacity.items()])}
+                
+                OUTSOURCED OPERATION TYPES:
+                {chr(10).join([f"- {row['Op_Type']}: {row['Count']} ops ({row['Percentage']:.1f}%)" for _, row in outsource_by_type.iterrows()]) if outsource_count > 0 else "None"}
+                
+                DECISION CRITERIA:
+                - Cost Threshold: 90% (outsource if vendor cost < 90% of in-house cost)
+                - Deadline Priority: Operations that can't meet deadlines are outsourced
+                - Current Heuristic: {ss.current_heuristic or 'None selected'}
+                
+                ANALYSIS REQUIRED:
+                1. ROOT CAUSE ANALYSIS: Why is outsourcing so high? Is it:
+                   a) Machine capacity limitations?
+                   b) Operation type mismatch (ops requiring machines we don't have)?
+                   c) Cost advantages from vendors?
+                   d) Scheduling inefficiency?
+                
+                2. MACHINE UTILIZATION ISSUE: Why do some machines (like M6, M9) have very few jobs?
+                   - Is it dataset composition (few TURNING/GRINDING operations)?
+                   - Are these machines underutilized due to poor scheduling?
+                
+                3. ACTIONABLE RECOMMENDATIONS:
+                   - Should we adjust cost threshold? (currently 0.9)
+                   - Do we need more machines or different machine types?
+                   - Can scheduling be improved to reduce outsourcing?
+                   - What's the optimal outsourcing percentage for this operation mix?
+                
+                4. QUICK WINS: 3 immediate actions to reduce outsourcing costs while maintaining delivery performance.
+                
+                Provide detailed, specific, and actionable insights for a manufacturing operations manager.
+                """
+                
+                insights = generate_ai_insights(
+                    "Provide comprehensive outsourcing and machine utilization analysis with specific recommendations.",
+                    context_data=context
+                )
+                
+                if insights:
+                    st.markdown(insights)
+                    st.caption("💡 Analysis powered by Google Gemini AI")
+                else:
+                    st.warning("⚠️ AI analysis requires `google-generativeai` package and valid GEMINI_API_KEY in .env file")
+                    
+                    # Provide manual analysis
+                    st.info("""
+                    **Manual Analysis (AI unavailable):**
+                    
+                    **Common Reasons for High Outsourcing:**
+                    1. **Dataset Composition**: Your dataset may have many operations requiring machine types you don't have
+                    2. **Cost Threshold Too Aggressive**: Current 0.9 threshold means outsourcing if vendor is <90% of in-house cost
+                    3. **Machine Type Mismatch**: 
+                       - M1, M3, M4: Handle MILLING & DRILLING
+                       - M6, M9: Handle TURNING & GRINDING
+                       - If your jobs are mostly MILLING/DRILLING, M6/M9 will be underutilized
+                    
+                    **Recommendations:**
+                    1. Check dataset: Run query to see operation type distribution
+                    2. Adjust cost threshold in sidebar (Advanced Settings → Outsourcing Policy)
+                    3. Consider adding machines for underrepresented operation types
+                    4. Review vendor costs - some vendors may be too competitive
+                    """)
 
 def handle_error(e):
     st.error(f"❌ ERROR: An error occurred during execution")
@@ -2111,10 +2711,17 @@ def main():
             # Page Navigation
             page = st.radio(
                 "� Navigation",
-                ["📊 Compare Algorithms", "🔍 View Schedule"],
-                index=0 if ss.current_page == "comparison" else 1
-            )
-            ss.current_page = "comparison" if "Compare" in page else "heuristic_view"
+                ["📊 Compare Algorithms", "🔍 View Schedule", "🏭 Outsourcing Analysis", "📜 Activity Log"],
+            index=0 if ss.current_page == "comparison" else (2 if ss.current_page == "outsourcing" else (3 if ss.current_page == "activity_log" else 1))
+)
+            if "Compare" in page:
+                ss.current_page = "comparison"
+            elif "Outsourcing" in page:
+                ss.current_page = "outsourcing"
+            elif "Activity Log" in page:
+                ss.current_page = "activity_log"
+            else:
+                ss.current_page = "heuristic_view"
             
             st.divider()
             
@@ -2135,10 +2742,21 @@ def main():
                     help="Choose which algorithm to apply to your schedule"
                 )
                 
-                if st.button("✅ Apply Algorithm", key='apply_heur', use_container_width=True):
+                # Check if any schedules have been computed
+                schedules_computed = (
+                    hasattr(ss, 'schedule_spt') and ss.schedule_spt is not None and not ss.schedule_spt.empty or
+                    hasattr(ss, 'schedule_edd') and ss.schedule_edd is not None and not ss.schedule_edd.empty or
+                    hasattr(ss, 'schedule_cr') and ss.schedule_cr is not None and not ss.schedule_cr.empty or
+                    hasattr(ss, 'schedule_priority') and ss.schedule_priority is not None and not ss.schedule_priority.empty
+                )
+                
+                if st.button("✅ Apply Algorithm", key='apply_heur', use_container_width=True, disabled=not schedules_computed):
                     ok = apply_heuristic_to_dataset(ss, apply_choice)
                     if ok:
                         st.rerun()
+                
+                if not schedules_computed:
+                    st.caption("⚠️ Click 'Compute All Algorithms' first")
             
             # Section 2: Manage Jobs
             with st.expander("📋 **2. Manage Jobs**", expanded=False):
@@ -2180,6 +2798,10 @@ def main():
         if ss.current_page == "comparison":
             st.header("📊 Algorithm Comparison")
             draw_comparison_tab(ss)
+        elif ss.current_page == "outsourcing":
+            draw_outsourcing_analysis(ss)
+        elif ss.current_page == "activity_log":
+            draw_activity_log(ss)
         else:
             if ss.current_heuristic:
                 st.header(f"📈 {ss.current_heuristic} Schedule")

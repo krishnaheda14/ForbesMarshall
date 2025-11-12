@@ -35,6 +35,7 @@ An intelligent, AI-powered CNC manufacturing scheduling system built with Stream
 ### Advanced Features
 - **Capacity Analysis**: Pre-validate new jobs before adding to schedule
 - **Priority Management**: Adjust job priorities to reflect business needs
+- **Machine Breakdown Simulator**: Add dynamic downtime windows to any machine, visualized in Gantt charts
 - **Outsourcing Policy**: Configure complexity thresholds for outsourcing decisions
 - **Export Functionality**: Download schedules as CSV for further processing
 
@@ -130,9 +131,26 @@ The app will open in your browser at `http://localhost:8501`
 3. Schedule automatically recalculates
 
 ### 4️⃣ Advanced Settings
-- **Machine Breakdown**: Simulate machine downtime (placeholder)
-- **Priority Manager**: Update job priorities in real-time
-- **Outsourcing Policy**: Adjust complexity thresholds
+
+#### Machine Breakdown Simulator
+1. Expand **"⚙️ 3. Advanced Settings"** in sidebar
+2. Select machine from dropdown
+3. Set breakdown day and time
+4. Set duration (hours)
+5. Click **"🔧 Add Breakdown"**
+6. Click **"Compute All Algorithms"** to see impact
+7. View breakdowns in Gantt chart (red dashed rectangles with "🔧 DOWN" label)
+8. Check **"Show Current Maintenance/Breakdowns"** to see all windows
+9. Click **"Clear All Breakdowns"** to reset to original schedule
+
+#### Priority Manager
+- Select job from dropdown
+- Choose new priority (1=urgent, 4=low)
+- Click **"Update Priority"** 
+- Recompute algorithms to see impact
+
+#### Outsourcing Policy
+- Adjust complexity thresholds for make-or-buy decisions
 
 ---
 
