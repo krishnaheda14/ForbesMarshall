@@ -1371,12 +1371,12 @@ def export_schedule(schedule_df):
 # NEW: compute_all_heuristics_and_metrics + apply_heuristic_to_dataset
 # ---------------------------
 def compute_all_heuristics_and_metrics(ss, show_progress=True):
-    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'BALANCED', 'DEADLINE_FIRST']
     metrics = []
     schedules = {}
 
     if show_progress:
-        st.info("🔄 Computing schedules for all heuristics using the CURRENT dataset "
+        st.info("🔄 Computing schedules for all 6 heuristics using the CURRENT dataset "
                 "(including any breakdowns, priority, or outsourcing updates)...")
         progress = st.progress(0)
 
@@ -1876,37 +1876,23 @@ def draw_breakdown_simulator(ss):
     with col1:
         breakdown_machine = st.selectbox("Machine:", available_machines, key='breakdown_machine')
     with col2:
-        input_mode = st.radio("Input Mode:", ["Day & Hour", "Minutes"], key='breakdown_input_mode', horizontal=True)
+        # Only minutes mode for simplicity
+        start_time_min = st.number_input("Start Time (minutes):", min_value=0, max_value=50000, value=4800, step=480, key='breakdown_start_min',
+                                        help="Tip: 480 min = 1 day, 4800 min = 10 days")
     
-    if input_mode == "Day & Hour":
-        col3, col4 = st.columns(2)
-        with col3:
-            breakdown_day = st.number_input("Day:", min_value=1, max_value=50, value=10, step=1, key='breakdown_day')
-            breakdown_start_hour = st.number_input("Start Hour (8-16):", min_value=8, max_value=16, value=10, step=1, key='breakdown_start')
-        with col4:
-            breakdown_duration = st.number_input("Duration (hours):", min_value=1, max_value=8, value=2, step=1, key='breakdown_duration')
-        
-        # Calculate minutes
-        MINUTES_PER_WORKDAY = 8 * 60
-        start_min_in_day = (breakdown_start_hour - 8) * 60
-        start_time_min = (breakdown_day - 1) * MINUTES_PER_WORKDAY + start_min_in_day
-        duration_min = breakdown_duration * 60
-        
-        st.caption(f"📊 Breakdown window: {start_time_min} to {start_time_min + duration_min} minutes")
-    else:
-        col3, col4 = st.columns(2)
-        with col3:
-            start_time_min = st.number_input("Start Time (minutes):", min_value=0, max_value=50000, value=10000, step=100, key='breakdown_start_min')
-        with col4:
-            duration_min = st.number_input("Duration (minutes):", min_value=60, max_value=480, value=120, step=60, key='breakdown_duration_min')
-        
-        # Calculate day/hour for display
+    col3, col4 = st.columns(2)
+    with col3:
+        duration_min = st.number_input("Duration (minutes):", min_value=30, max_value=480, value=120, step=30, key='breakdown_duration_min',
+                                      help="30-480 minutes (0.5-8 hours)")
+    with col4:
+        # Calculate day/hour for display reference
         breakdown_day = (start_time_min // 480) + 1
         start_hour = 8 + ((start_time_min % 480) // 60)
         end_min = start_time_min + duration_min
         end_hour = 8 + ((end_min % 480) // 60)
         
-        st.caption(f"📊 Equivalent to: Day {breakdown_day}, Hour {start_hour}:00-{end_hour}:00")
+        st.metric("Reference", f"Day {breakdown_day}, {start_hour}:00-{end_hour}:00", 
+                 help="This shows the equivalent day and hour for reference")
     
     if st.button("🔧 Add Breakdown", key='add_breakdown_btn', use_container_width=True):
         # Calculate breakdown window in minutes
@@ -1939,30 +1925,18 @@ def draw_breakdown_simulator(ss):
         ss.df_machines.at[machine_idx, 'Maintenance_Window'] = new_maintenance
         ss.base_df_machines.at[machine_idx, 'Maintenance_Window'] = new_maintenance
         
-        # Set flag to recompute all heuristics
-        ss.recalculate_all_heuristics = True
-        ss.breakdown_pending = True
-        
         # Log the action
         log_action(ss, "BREAKDOWN_ADDED", {
             'machine': breakdown_machine,
             'start_min': start_time_min,
             'end_min': end_time_min,
             'duration_min': duration_min,
-            'day': (start_time_min // 480) + 1
+            'day': breakdown_day
         })
         
-        # Calculate display values
-        display_day = (start_time_min // 480) + 1
-        display_start_hour = 8 + ((start_time_min % 480) // 60)
-        display_end_hour = 8 + ((end_time_min % 480) // 60)
-        
-        st.success(f"✅ Breakdown added to {breakdown_machine}:")
-        st.info(f"   📅 Day {display_day}, {display_start_hour}:00-{display_end_hour}:00\n"
-                f"   ⏱️ Minutes: {start_time_min} to {end_time_min} ({duration_min} min)")
-        st.info("💡 Click **'🧪 Compute All Heuristics'** to see updated schedules with breakdown impact")
-        
-        safe_toast(f"⚙️ Breakdown registered for {breakdown_machine}", icon="🔧")
+        # Trigger recompute prompt
+        trigger_recompute_prompt(ss, "Machine Breakdown")
+        st.rerun()
     
     # Show current breakdowns/maintenance
     if st.checkbox("Show Current Maintenance/Breakdowns", key='show_breakdowns'):
@@ -1984,10 +1958,10 @@ def draw_breakdown_simulator(ss):
                     for i, window in enumerate(windows):
                         start_min = window.get('start', 0)
                         end_min = window.get('end', 0)
+                        duration_min = end_min - start_min
+                        # Show only minutes, with day reference
                         start_day = (start_min // 480) + 1
-                        start_hour = 8 + ((start_min % 480) // 60)
-                        end_hour = 8 + ((end_min % 480) // 60)
-                        st.caption(f"  • Day {start_day}, {start_hour}:00-{end_hour}:00 ({(end_min - start_min) // 60}h)")
+                        st.caption(f"  • {start_min} to {end_min} min ({duration_min} min) — Day {start_day} reference")
         
         if st.button("🗑️ Clear All Breakdowns", key='clear_breakdowns'):
             # Reset maintenance to original (from CSV)
@@ -2035,7 +2009,8 @@ def draw_priority_manager(ss):
             'new_priority': new_priority
         })
         
-        safe_toast(f"✅ {job_sel} priority set to {new_priority}", icon="📊")
+        # Trigger recompute prompt
+        trigger_recompute_prompt(ss, "Priority Update")
         st.rerun()
 
 def draw_outsourcing_policy(ss):
@@ -2050,31 +2025,39 @@ def draw_outsourcing_policy(ss):
         key='outsource_threshold_slider'
     )
     
-    if st.button("Apply Threshold", key='apply_threshold'):
+    if st.button("Apply Threshold", key='apply_threshold', use_container_width=True):
+        old_threshold = ss.get('cost_threshold', 0.9)
         ss.cost_threshold = threshold
+        
+        # Log the action
         log_action(ss, "OUTSOURCING_UPDATED", {
-            'threshold': threshold,
-            'description': f"Cost threshold set to {threshold:.0%}"
+            'old_threshold': old_threshold,
+            'new_threshold': threshold,
+            'description': f"Cost threshold changed from {old_threshold:.0%} to {threshold:.0%}"
         })
-        st.success(f"✅ Cost threshold updated to {threshold:.0%}. Recompute algorithms to apply changes.")
+        
+        # Trigger recompute prompt - threshold changes affect make-or-buy decisions
+        trigger_recompute_prompt(ss, "Outsourcing Cost Threshold Update")
         st.rerun()
     
     st.caption(f"**Current:** {ss.get('cost_threshold', 0.9):.0%} — Lower = More In-House")
     
-    # Quick recommendations
-    with st.expander("📊 Threshold Impact Guide"):
-        st.markdown("""
-        **Recommended Thresholds:**
-        - **50-60%**: Maximum in-house utilization (only outsource if vendor is 50% cheaper)
-        - **70-80%**: Balanced approach (recommended for reducing current 63% outsourcing)
-        - **90-95%**: Cost-focused (current setting - high outsourcing)
-        - **100%**: Outsource at cost parity
-        
-        **Current Issue**: At 90%, you're outsourcing whenever vendor is slightly cheaper, 
-        ignoring the value of keeping work in-house (overhead absorption, quality control).
-        
-        **Recommendation**: Start with **75%** and monitor results.
+    # Quick recommendations (using toggle instead of expander to avoid nesting)
+    show_guide = st.checkbox("Show Threshold Impact Guide", key='show_threshold_guide')
+    if show_guide:
+        st.info("""
+**Recommended Thresholds:**
+- **50-60%**: Maximum in-house utilization (only outsource if vendor is 50% cheaper)
+- **70-80%**: Balanced approach (recommended for reducing current 63% outsourcing)
+- **90-95%**: Cost-focused (current setting - high outsourcing)
+- **100%**: Outsource at cost parity
+
+**Current Issue**: At 90%, you're outsourcing whenever vendor is slightly cheaper, 
+ignoring the value of keeping work in-house (overhead absorption, quality control).
+
+**Recommendation**: Start with **75%** and monitor results.
         """)
+
 
 # ---------------------------
 # Main page content functions
@@ -2255,12 +2238,12 @@ def draw_comparison_tab(ss):
     recalc_flag = st.session_state.get('recalculate_all_heuristics', False)
     if recalc_flag:
         st.warning("⚠️ DETECTED: Dataset changed — recalculating comparison metrics...")
-        with st.spinner("🔄 Recalculating all 4 heuristics..."):
+        with st.spinner("🔄 Recalculating all 6 heuristics..."):
             try:
                 metrics = []
-                heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+                heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'BALANCED', 'DEADLINE_FIRST']
                 for i, heur in enumerate(heuristics):
-                    st.write(f"  {i+1}/4: Computing {heur} metrics...")
+                    st.write(f"  {i+1}/6: Computing {heur} metrics...")
                     schedule_key = f'schedule_{heur.lower()}'
                     schedule = getattr(ss, schedule_key, None)
                     if schedule is not None:
@@ -2334,6 +2317,254 @@ def draw_comparison_tab(ss):
             
     else:
         st.info("📊 No comparison data yet. Click '🧪 Compute All Heuristics' in the sidebar to generate comparison results.")
+
+# ---------------------------
+# Capacity Planning & What-If Analysis
+# ---------------------------
+def draw_capacity_planning(ss):
+    """
+    Interactive capacity planning dashboard for evaluating machine additions,
+    shift strategies, and threshold adjustments.
+    """
+    st.header("📐 Capacity Planning & What-If Analysis")
+    st.markdown("Evaluate different scenarios to reduce outsourcing and optimize machine utilization.")
+    
+    if not hasattr(ss, 'base_df_ops') or not hasattr(ss, 'base_df_machines'):
+        st.warning("Data not loaded. Initialize the app first.")
+        return
+    
+    df_ops = ss.base_df_ops.copy()
+    df_machines = ss.base_df_machines.copy()
+    
+    # Current state metrics
+    total_ops = len(df_ops)
+    outsourced = len(df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE'])
+    inhouse = len(df_ops[df_ops['Assignment_Type'] == 'IN_HOUSE'])
+    outsource_pct = (outsourced / total_ops * 100) if total_ops > 0 else 0
+    
+    # Workload by operation type
+    op_breakdown = df_ops.groupby('Op_Type').agg({
+        'Operation_ID': 'count',
+        'Total_Proc_Min': 'sum'
+    }).rename(columns={'Operation_ID': 'Count', 'Total_Proc_Min': 'Total_Minutes'})
+    op_breakdown['Hours'] = op_breakdown['Total_Minutes'] / 60
+    op_breakdown['Days'] = op_breakdown['Total_Minutes'] / 480  # 8-hour days
+    
+    # === SCENARIO 1: Current State ===
+    st.subheader("📊 Current State Analysis")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Operations", total_ops)
+    with col2:
+        st.metric("Outsourced", f"{outsourced} ({outsource_pct:.1f}%)", 
+                 delta=f"-${outsourced * 28.04:.0f}" if outsourced > 0 else None,
+                 delta_color="inverse")
+    with col3:
+        st.metric("In-House", f"{inhouse} ({100-outsource_pct:.1f}%)")
+    with col4:
+        st.metric("Machines", len(df_machines))
+    
+    # Workload distribution
+    st.markdown("#### Workload Distribution by Operation Type")
+    
+    # Add machine coverage info
+    op_breakdown_display = op_breakdown.copy()
+    op_breakdown_display['Covering Machines'] = op_breakdown_display.index.map({
+        'MILLING': 'M1, M3, M4 (3 machines)',
+        'DRILLING': 'M1, M3, M4 (3 machines)',
+        'TURNING': 'M6, M9 (2 machines)',
+        'GRINDING': 'M6, M9 (2 machines)'
+    })
+    op_breakdown_display['Machines/Day Required'] = (op_breakdown_display['Days'] / 30).round(2)
+    
+    st.dataframe(op_breakdown_display.style.format({
+        'Count': '{:.0f}',
+        'Total_Minutes': '{:,.0f}',
+        'Hours': '{:,.1f}',
+        'Days': '{:,.1f}',
+        'Machines/Day Required': '{:.2f}'
+    }), use_container_width=True)
+    
+    # === SCENARIO 2: Machine Addition Analysis ===
+    st.subheader("🏭 Scenario: Add More Machines")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        add_mills = st.number_input("Add Milling Machines:", 0, 5, 1, key='add_mills')
+        add_lathes = st.number_input("Add Turning/Grinding Machines:", 0, 5, 1, key='add_lathes')
+    
+    with col2:
+        # Calculate projected capacity
+        current_mill_capacity = 3  # M1, M3, M4
+        current_lathe_capacity = 2  # M6, M9
+        
+        new_mill_capacity = current_mill_capacity + add_mills
+        new_lathe_capacity = current_lathe_capacity + add_lathes
+        
+        # Workload for milling/drilling vs turning/grinding
+        mill_drill_days = op_breakdown.loc[op_breakdown.index.isin(['MILLING', 'DRILLING']), 'Days'].sum()
+        turn_grind_days = op_breakdown.loc[op_breakdown.index.isin(['TURNING', 'GRINDING']), 'Days'].sum()
+        
+        # Assume 30 working days
+        working_days = 30
+        mill_util_current = (mill_drill_days / (current_mill_capacity * working_days)) * 100
+        lathe_util_current = (turn_grind_days / (current_lathe_capacity * working_days)) * 100
+        
+        mill_util_new = (mill_drill_days / (new_mill_capacity * working_days)) * 100
+        lathe_util_new = (turn_grind_days / (new_lathe_capacity * working_days)) * 100
+        
+        st.metric("Mill Utilization Change", 
+                 f"{mill_util_new:.1f}%",
+                 delta=f"{mill_util_new - mill_util_current:.1f}%",
+                 delta_color="inverse")
+        st.metric("Lathe Utilization Change",
+                 f"{lathe_util_new:.1f}%", 
+                 delta=f"{lathe_util_new - lathe_util_current:.1f}%",
+                 delta_color="inverse")
+    
+    # Estimated outsourcing reduction
+    if add_mills > 0 or add_lathes > 0:
+        st.info(f"""
+        **Projected Impact with +{add_mills} Mill(s) and +{add_lathes} Lathe(s):**
+        - Additional monthly capacity: ~{(add_mills + add_lathes) * 30:.0f} machine-days
+        - Estimated outsourcing reduction: {min((add_mills + add_lathes) * 10, outsource_pct):.1f}% → {max(outsource_pct - (add_mills + add_lathes) * 10, 15):.1f}%
+        - Potential monthly savings: ${min((add_mills + add_lathes) * 2500, outsourced * 28.04):.0f}
+        - **Recommended**: 1 Mill + 1 Lathe to balance capacity
+        """)
+    
+    # === SCENARIO 3: Extended Shifts ===
+    st.subheader("⏰ Scenario: Extended Operating Hours")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        shift_strategy = st.selectbox("Shift Strategy:", [
+            "Current (Single 8-hour shift)",
+            "Extended Shift (10-hour days)",
+            "Two Shifts (16 hours/day)",
+            "Weekend Production (+2 days/week)"
+        ], key='shift_strategy')
+    
+    with col2:
+        # Calculate effective capacity multiplier
+        if "10-hour" in shift_strategy:
+            capacity_multiplier = 1.25
+        elif "Two Shifts" in shift_strategy:
+            capacity_multiplier = 2.0
+        elif "Weekend" in shift_strategy:
+            capacity_multiplier = 1.4  # 7/5 days
+        else:
+            capacity_multiplier = 1.0
+        
+        effective_machines = len(df_machines) * capacity_multiplier
+        
+        st.metric("Effective Machine Capacity", 
+                 f"{effective_machines:.1f} machines",
+                 delta=f"+{(capacity_multiplier - 1) * 100:.0f}%")
+        
+        # Estimate outsourcing reduction
+        current_util = (mill_drill_days + turn_grind_days) / (len(df_machines) * 30) * 100
+        new_util = current_util / capacity_multiplier
+        
+        outsource_reduction = min((capacity_multiplier - 1) * 25, outsource_pct - 20)
+        
+        if capacity_multiplier > 1.0:
+            st.info(f"""
+            **Projected Impact:**
+            - New average utilization: {new_util:.1f}%
+            - Estimated outsourcing reduction: {outsource_pct:.1f}% → {outsource_pct - outsource_reduction:.1f}%
+            - Monthly savings potential: ${outsource_reduction / 100 * outsourced * 28.04:.0f}
+            """)
+    
+    # === SCENARIO 4: Cost Threshold Adjustment ===
+    st.subheader("💰 Scenario: Adjust Outsourcing Cost Threshold")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        current_threshold = ss.get('cost_threshold', 0.9)
+        new_threshold = st.slider("New Cost Threshold:", 0.5, 1.0, current_threshold, 0.05, key='whatif_threshold')
+        
+        st.caption(f"""
+        **Current**: {current_threshold:.0%} - Outsource if vendor < {current_threshold:.0%} of in-house cost  
+        **New**: {new_threshold:.0%} - Outsource if vendor < {new_threshold:.0%} of in-house cost
+        """)
+    
+    with col2:
+        # Estimate impact (rough heuristic)
+        threshold_change = (current_threshold - new_threshold) * 100
+        estimated_ops_brought_inhouse = int(outsourced * (threshold_change / 50))  # ~2% per 1% threshold drop
+        
+        new_outsource_pct = ((outsourced - estimated_ops_brought_inhouse) / total_ops * 100) if total_ops > 0 else 0
+        
+        st.metric("Estimated New Outsourcing Rate",
+                 f"{new_outsource_pct:.1f}%",
+                 delta=f"{new_outsource_pct - outsource_pct:.1f}%",
+                 delta_color="inverse")
+        
+        st.metric("Operations Brought In-House",
+                 f"+{estimated_ops_brought_inhouse}",
+                 delta=f"${estimated_ops_brought_inhouse * 28.04:.0f} saved/month")
+    
+    # === RECOMMENDATIONS ===
+    st.subheader("🎯 Recommended Action Plan")
+    
+    st.markdown("""
+    ### Quick Wins (0-30 days):
+    1. **Switch to DEADLINE_FIRST or BALANCED heuristic** - No cost, immediate impact on deadline adherence
+    2. **Lower cost threshold to 75%** - Brings ~40-50 operations in-house monthly
+    3. **Implement overtime for M6/M9** - Saturdays or extended shifts to clear bottleneck
+    
+    ### Medium-Term (1-3 months):
+    4. **Add 1 Turning/Grinding machine** - M6/M9 are bottlenecks (2 machines handling 46% of outsourced work)
+    5. **Add 1 Milling machine** - Provides redundancy and reduces queue times
+    6. **Renegotiate vendor contracts** - Use volume leverage to get better rates for unavoidable outsourcing
+    
+    ### Strategic (3-6 months):
+    7. **Implement 2-shift operation** - Double effective capacity without capital expenditure
+    8. **Cross-train operators** - Reduce worker bottlenecks on shared machines (M3)
+    9. **Optimize setup reduction** - Batch similar material types to reduce setup penalties
+    
+    ### Target Metrics:
+    - **Outsourcing Rate**: Reduce from 63% to **15-25%** (ideal range)
+    - **Machine Utilization**: Increase to 75-85% (optimal productive range)
+    - **On-Time Delivery**: Improve from current to >95%
+    - **Monthly Savings**: $3,000-$5,000 by bringing 100-150 ops in-house
+    """)
+    
+    # Apply recommendations button
+    if st.button("📋 Generate Detailed Implementation Plan", key='gen_plan'):
+        st.markdown("""
+        ### Detailed Implementation Plan
+        
+        #### Phase 1: Immediate Actions (This Week)
+        - [ ] Change scheduling heuristic to BALANCED or DEADLINE_FIRST
+        - [ ] Lower cost threshold to 0.75
+        - [ ] Recompute all schedules and compare results
+        - [ ] Schedule overtime for M6/M9 (Saturday half-shifts)
+        
+        #### Phase 2: Analysis & Procurement (Weeks 2-4)
+        - [ ] Analyze top 50 outsourced operations by cost
+        - [ ] Get quotes for 1 additional Turning machine and 1 Mill
+        - [ ] Calculate ROI: Monthly savings vs. machine cost/financing
+        - [ ] Renegotiate contracts with V_Mill_Std and V_Turn_Std (your highest-volume vendors)
+        
+        #### Phase 3: Capacity Expansion (Months 2-3)
+        - [ ] Install new machines
+        - [ ] Hire/train 2 additional operators
+        - [ ] Implement 2-shift schedule (6 AM - 2 PM, 2 PM - 10 PM)
+        - [ ] Update scheduling system with new machine capacity
+        
+        #### Phase 4: Optimization (Months 4-6)
+        - [ ] Implement material batching strategy
+        - [ ] Setup reduction program (target: reduce average setup by 20%)
+        - [ ] Preventive maintenance optimization
+        - [ ] Continuous monitoring dashboard
+        
+        **Expected ROI**: 
+        - Monthly savings: $4,000-$6,000
+        - Machine investment payback: 12-18 months
+        - Quality improvement: Reduced vendor variability
+        - Lead time improvement: 30-40% reduction for in-house ops
+        """)
 
 # ---------------------------
 # Outsourcing & Machine Utilization Analysis
@@ -2671,6 +2902,8 @@ def initialize_app(ss):
     ss.schedule_edd = None
     ss.schedule_cr = None
     ss.schedule_priority = None
+    ss.schedule_balanced = None
+    ss.schedule_deadline_first = None
 
     ss.df_ops = ss.base_df_ops.copy()
     ss.df_machines = ss.base_df_machines.copy()
@@ -2710,14 +2943,16 @@ def main():
             
             # Page Navigation
             page = st.radio(
-                "� Navigation",
-                ["📊 Compare Algorithms", "🔍 View Schedule", "🏭 Outsourcing Analysis", "📜 Activity Log"],
-            index=0 if ss.current_page == "comparison" else (2 if ss.current_page == "outsourcing" else (3 if ss.current_page == "activity_log" else 1))
+                "📍 Navigation",
+                ["📊 Compare Algorithms", "🔍 View Schedule", "🏭 Outsourcing Analysis", "� Capacity Planning", "�📜 Activity Log"],
+            index=0 if ss.current_page == "comparison" else (2 if ss.current_page == "outsourcing" else (3 if ss.current_page == "capacity" else (4 if ss.current_page == "activity_log" else 1)))
 )
             if "Compare" in page:
                 ss.current_page = "comparison"
             elif "Outsourcing" in page:
                 ss.current_page = "outsourcing"
+            elif "Capacity Planning" in page:
+                ss.current_page = "capacity"
             elif "Activity Log" in page:
                 ss.current_page = "activity_log"
             else:
@@ -2731,7 +2966,7 @@ def main():
                     compute_all_heuristics_and_metrics(ss, show_progress=True)
                     st.rerun()
                 
-                heuristic_options = ('SPT', 'EDD', 'CR', 'PRIORITY')
+                heuristic_options = ('SPT', 'EDD', 'CR', 'PRIORITY', 'BALANCED', 'DEADLINE_FIRST')
                 current_h = ss.get("current_heuristic")
                 current_index = heuristic_options.index(current_h) if current_h in heuristic_options else 0
                 
@@ -2800,6 +3035,8 @@ def main():
             draw_comparison_tab(ss)
         elif ss.current_page == "outsourcing":
             draw_outsourcing_analysis(ss)
+        elif ss.current_page == "capacity":
+            draw_capacity_planning(ss)
         elif ss.current_page == "activity_log":
             draw_activity_log(ss)
         else:
