@@ -281,14 +281,8 @@ class CNCScheduler:
         maintenance_list.sort(key=lambda mw: mw.get('start', 0))
 
         # ✅ Adjust for any overlap between current availability and maintenance windows
-        # Keep iterating until we find a time slot that doesn't conflict with any breakdown/maintenance
-        max_iterations = 100  # Prevent infinite loops
-        iteration = 0
-        
-        while iteration < max_iterations:
+        while True:
             adjusted = False
-            end_time = current_avail + duration
-            
             for mw in maintenance_list:
                 mw_start = mw.get('start', 0)
                 mw_end = mw.get('end', 0)
@@ -297,21 +291,21 @@ class CNCScheduler:
                 if mw_end <= mw_start:
                     continue
 
-                # ✅ CRITICAL: Check if operation [current_avail, end_time] overlaps breakdown [mw_start, mw_end]
-                # Overlap occurs when: operation_start < breakdown_end AND operation_end > breakdown_start
+                end_time = current_avail + duration
+
+                # Check if this job would overlap the maintenance window
                 overlap = (current_avail < mw_end) and (end_time > mw_start)
-                
                 if overlap:
-                    # ✅ Move operation to start AFTER the breakdown/maintenance window
+                    # Move start to after maintenance end
                     current_avail = mw_end
                     adjusted = True
-                    break  # Recheck all windows with new start time
-                    
+                    break  # Recheck all windows again
             if not adjusted:
-                break  # No conflicts found, we have a valid time slot
-            iteration += 1
+                break
 
-        # ✅ Return the earliest available start time (do NOT update machine_availability here)
+        # ✅ Update machine availability to reflect the new time slot
+        self.machine_availability[machine_id] = current_avail + duration
+
         return current_avail
 
 
@@ -404,7 +398,6 @@ class CNCScheduler:
             'Tardiness': max(0, end_time - operation.get('Due_Time_Min', 0))
         })
 
-        # ✅ Update machine availability to the end of this operation
         self.machine_availability[machine_id] = end_time
         self.machine_last_material[machine_id] = operation.get('Mat_Type', None)
         self.op_completion_times[op_id] = end_time
@@ -853,67 +846,31 @@ def create_gantt_chart(
             )
         )
 
-    # ✅ Display all maintenance/breakdown windows
     for _, machine in machines_df.iterrows():
         maint = machine.get("Maintenance_Window")
         machine_id = machine.get("Machine_ID")
-        
-        if maint and machine_id in all_machines_sorted:
-            # Handle both single window (dict) and multiple windows (list)
-            windows = [maint] if isinstance(maint, dict) else (maint if isinstance(maint, list) else [])
-            
-            for i, window in enumerate(windows):
-                if isinstance(window, dict) and "start" in window and "end" in window:
-                    # Calculate shifted positions
-                    window_start_shifted = window["start"] - x_min
-                    window_end_shifted = window["end"] - x_min
-                    window_duration = window.get("duration", window["end"] - window["start"])
-                    
-                    # Add semi-transparent red rectangle for breakdown/maintenance
-                    fig.add_shape(
-                        type="rect",
-                        x0=window_start_shifted,
-                        x1=window_end_shifted,
-                        y0=all_machines_sorted.index(machine_id) - 0.45,
-                        y1=all_machines_sorted.index(machine_id) + 0.45,
-                        fillcolor="rgba(255,50,50,0.35)",
-                        line=dict(color="rgba(255,0,0,0.8)", width=2, dash="dot"),
-                        layer="above",
-                    )
-                    
-                    # Add annotation label for breakdown
-                    fig.add_annotation(
-                        x=(window_start_shifted + window_end_shifted) / 2,
-                        y=machine_id,
-                        text=f"⚠️ BREAKDOWN<br>{window_duration} min",
-                        showarrow=False,
-                        font=dict(size=9, color="white", family="Arial Black"),
-                        bgcolor="rgba(200,0,0,0.7)",
-                        bordercolor="red",
-                        borderwidth=1,
-                        borderpad=2,
-                        opacity=0.9
-                    )
+        if maint and "start" in maint and "end" in maint and machine_id in all_machines_sorted:
+            fig.add_shape(
+                type="rect",
+                x0=maint["start"] - x_min,
+                x1=maint["end"] - x_min,
+                y0=all_machines_sorted.index(machine_id) - 0.4,
+                y1=all_machines_sorted.index(machine_id) + 0.4,
+                fillcolor="rgba(255,0,0,0.25)",
+                line_width=0,
+                layer="below",
+            )
 
     pad = max((x_max - x_min) * 0.05, 100)
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color="#E0E0E0")),
+        title=title,
         xaxis_title="Time (minutes, shifted)",
         yaxis_title="Machine",
         height=600,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         margin=dict(l=50, r=20, t=60, b=40),
-        font=dict(size=12, color="#E0E0E0"),
-        xaxis=dict(
-            gridcolor="rgba(128,128,128,0.2)",
-            zerolinecolor="rgba(128,128,128,0.3)",
-            color="#E0E0E0"
-        ),
-        yaxis=dict(
-            gridcolor="rgba(128,128,128,0.2)",
-            color="#E0E0E0"
-        ),
+        font=dict(size=12),
     )
     fig.update_yaxes(
         categoryorder="array",
@@ -1219,16 +1176,6 @@ def compute_all_heuristics_and_metrics(ss, show_progress=True):
     ss.recalculate_all_heuristics = False
     ss.force_metric_refresh = False
 
-    # ✅ LOG ACTIVITY
-    if "activity_log" not in ss:
-        ss.activity_log = []
-    ss.activity_log.append({
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'action': 'All Heuristics Computed',
-        'details': f"Computed: {', '.join(heuristics)} | Dataset: {len(ss.base_df_ops)} ops, {len(ss.base_df_machines)} machines",
-        'affected_items': 'All schedules'
-    })
-
     # ✅ Notify success
     st.success("✅ All heuristics recomputed successfully.")
     st.toast("📊 Updated heuristic metrics ready for review!", icon="📈")
@@ -1315,16 +1262,6 @@ def apply_heuristic_to_dataset(ss, heuristic):
 
     ss.base_df_ops = ops.copy()
     ss.df_ops = ops.copy()
-
-    # ✅ LOG ACTIVITY
-    if "activity_log" not in ss:
-        ss.activity_log = []
-    ss.activity_log.append({
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'action': f'Heuristic Applied: {heuristic}',
-        'details': f"Schedule size: {len(schedule_df)} operations | Updated operation assignments",
-        'affected_items': f"{len(schedule_df)} scheduled operations"
-    })
 
     # ✅ Persist current heuristic choice
     ss.current_heuristic = heuristic
@@ -1527,7 +1464,7 @@ def draw_live_job_scheduler(ss):
 
         col_analyze, col_add = st.columns(2)
         with col_analyze:
-            if st.button("🔍 Analyze Capacity", use_container_width=True, type="primary"):
+            if st.button("🔍 Analyze Capacity", width='stretch', type="primary"):
                 current_time_days = ss.current_schedule['End_Time'].max() / 480 if not ss.current_schedule.empty else 0
                 release_time_min = current_time_days * 480
                 due_time_min = release_time_min + (live_due_days * 480)
@@ -1650,7 +1587,7 @@ def draw_live_job_scheduler(ss):
                 st.write(util_reason)
 
             with col_add:
-                if st.button("➕ Add Job", use_container_width=True, disabled=False):
+                if st.button("➕ Add Job", width='stretch', disabled=False):
                     
                     # --- START FIX: VALIDATION CHECK ---
                     
@@ -1713,7 +1650,7 @@ def draw_live_job_scheduler(ss):
                     st.rerun()
 
 def draw_system_reset(ss):
-    if st.sidebar.button("🔄 Reset System to Original State", use_container_width=True):
+    if st.sidebar.button("🔄 Reset System to Original State", width='stretch'):
         with st.spinner("Resetting system..."):
             st.cache_data.clear()
             st.cache_resource.clear()
@@ -1730,7 +1667,7 @@ def draw_data_export(ss):
         data=csv_data,
         file_name=f"cnc_schedule_{safe_name}_current.csv",
         mime='text/csv',
-        use_container_width=True
+        width='stretch'
     )
 
 def draw_breakdown_simulator(ss):
@@ -1741,23 +1678,16 @@ def draw_breakdown_simulator(ss):
         st.sidebar.write("🧩 Min Start Time:", ss.current_schedule["Start_Time"].min() if not ss.current_schedule.empty else 0)
         st.sidebar.write("🧩 Max End Time:", ss.current_schedule["End_Time"].max() if not ss.current_schedule.empty else 0)
 
-        # Dynamic range based on actual schedule
-        min_slider_val = 0
         max_slider_val = 60000
-        default_val = 100
-        
         if not ss.current_schedule.empty:
-            min_slider_val = int(ss.current_schedule['Start_Time'].min())
             max_slider_val = int(ss.current_schedule['End_Time'].max())
-            default_val = min(int((min_slider_val + max_slider_val) / 2), max_slider_val)
 
-        bd_start = st.slider("Breakdown Start (min):", min_slider_val, max_slider_val, default_val, key='bd_start')
+        bd_start = st.slider("Breakdown Start (min):", 16320, max_slider_val, 60000, key='bd_start')
         bd_duration = st.slider("Breakdown Duration (min):", 30, 1000, 120, key='bd_duration')
 
         if st.button("Simulate Breakdown", key='bd_button'):
             with st.spinner(f"Simulating breakdown for {bd_machine}..."):
                 df_machines_temp = ss.df_machines.copy()
-                df_ops_temp = ss.df_ops.copy()
                 bd_end = bd_start + bd_duration
                 machine_idx = df_machines_temp[df_machines_temp['Machine_ID'] == bd_machine].index
 
@@ -1767,78 +1697,12 @@ def draw_breakdown_simulator(ss):
                     existing_maint = df_machines_temp.at[idx, 'Maintenance_Window']
 
                     if existing_maint:
-                        st.warning(f"{bd_machine} already has maintenance. Adding breakdown window.")
-                        # Merge with existing maintenance (support multiple windows)
-                        if isinstance(existing_maint, dict):
-                            df_machines_temp.at[idx, 'Maintenance_Window'] = [existing_maint, breakdown_window]
-                        elif isinstance(existing_maint, list):
-                            df_machines_temp.at[idx, 'Maintenance_Window'] = existing_maint + [breakdown_window]
-                    else:
-                        df_machines_temp.at[idx, 'Maintenance_Window'] = breakdown_window
+                        st.warning(f"{bd_machine} already has maintenance. Overriding with breakdown.")
+                    df_machines_temp.at[idx, 'Maintenance_Window'] = breakdown_window
 
-                    # ✅ CRITICAL: Identify operations currently scheduled during breakdown
-                    affected_ops = []
-                    if not ss.current_schedule.empty and 'Machine_ID' in ss.current_schedule.columns:
-                        machine_schedule = ss.current_schedule[
-                            ss.current_schedule['Machine_ID'] == bd_machine
-                        ]
-                        
-                        for _, op_row in machine_schedule.iterrows():
-                            op_start = op_row.get('Start_Time', 0)
-                            op_end = op_row.get('End_Time', 0)
-                            
-                            # Check overlap: operation overlaps breakdown if start < bd_end AND end > bd_start
-                            if op_start < bd_end and op_end > bd_start:
-                                affected_ops.append({
-                                    'Operation_ID': op_row.get('Operation_ID'),
-                                    'Job_ID': op_row.get('Job_ID'),
-                                    'Original_Start': op_start,
-                                    'Original_End': op_end
-                                })
-                    
-                    # ✅ Re-evaluate make-or-buy for affected operations
-                    outsourced_count = 0
-                    for affected in affected_ops:
-                        op_id = affected['Operation_ID']
-                        op_data = df_ops_temp[df_ops_temp['Operation_ID'] == op_id]
-                        
-                        if not op_data.empty:
-                            op = op_data.iloc[0]
-                            # Re-run make-or-buy decision with current threshold
-                            decision, cost, reason = make_or_buy_decision(
-                                op, 
-                                ss.base_df_effective, 
-                                cost_threshold=ss.cost_threshold
-                            )
-                            
-                            # Update assignment if outsourcing is better due to breakdown
-                            if decision == 'OUTSOURCE':
-                                df_ops_temp.loc[df_ops_temp['Operation_ID'] == op_id, 'Assignment_Type'] = 'OUTSOURCE'
-                                outsourced_count += 1
-                    
                     # ✅ Persist updated data
                     ss.df_machines = df_machines_temp.copy()
                     ss.base_df_machines = df_machines_temp.copy()
-                    ss.df_ops = df_ops_temp.copy()
-                    ss.base_df_ops = df_ops_temp.copy()
-
-                    # ✅ LOG ACTIVITY
-                    if "activity_log" not in ss:
-                        ss.activity_log = []
-                    
-                    log_details = f"Machine: {bd_machine}, Start: {bd_start} min, Duration: {bd_duration} min, End: {bd_end} min"
-                    if len(affected_ops) > 0:
-                        affected_op_ids = [op['Operation_ID'] for op in affected_ops]
-                        log_details += f" | Affected Operations: {', '.join(affected_op_ids)}"
-                    if outsourced_count > 0:
-                        log_details += f" | Auto-outsourced: {outsourced_count} ops"
-                    
-                    ss.activity_log.append({
-                        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'action': 'Machine Breakdown Added',
-                        'details': log_details,
-                        'affected_items': f"{bd_machine} ({len(affected_ops)} ops affected)"
-                    })
 
                     # ✅ Mark recomputation required
                     ss.recalculate_all_heuristics = True
@@ -1852,15 +1716,9 @@ def draw_breakdown_simulator(ss):
 
                     # ✅ User-facing messages
                     st.success(f"🚨 Breakdown added for {bd_machine} "
-                               f"(Start={bd_start} min, Duration={bd_duration} min, End={bd_end} min)")
-                    
-                    if len(affected_ops) > 0:
-                        st.warning(f"⚠️ {len(affected_ops)} operation(s) were scheduled during breakdown time")
-                        if outsourced_count > 0:
-                            st.info(f"📦 {outsourced_count} operation(s) reassigned to OUTSOURCE due to breakdown conflict")
-                        st.info(f"🔄 Remaining operations will be rescheduled after breakdown window (after {bd_end} min)")
-                    
-                    st.info("💡 Click **'🧪 Compute All Heuristics'** to recompute schedules with breakdown enforced.")
+                               f"(Start={bd_start}, Duration={bd_duration} min).")
+                    st.info("💡 Please click **'🧪 Compute All Heuristics'** in the sidebar "
+                            "to recompute schedules and view updated recommendations.")
 
                     # ✅ Toast notification for subtle visual feedback
                     st.toast("⚙ Machine breakdown applied — ready for heuristic recomputation.", icon="⚙️")
@@ -1884,22 +1742,9 @@ def draw_priority_manager(ss):
 
         if st.button("Update Priority", key='priority_button'):
             with st.spinner(f"Updating {priority_job} to P{new_priority}..."):
-                # Get old priority for logging
-                old_priority = ss.df_ops[ss.df_ops['Job_ID'] == priority_job]['Priority'].iloc[0] if not ss.df_ops[ss.df_ops['Job_ID'] == priority_job].empty else None
-                
                 # ✅ Update dataset priority
                 ss.df_ops.loc[ss.df_ops['Job_ID'] == priority_job, 'Priority'] = new_priority
                 ss.base_df_ops.loc[ss.base_df_ops['Job_ID'] == priority_job, 'Priority'] = new_priority
-
-                # ✅ LOG ACTIVITY
-                if "activity_log" not in ss:
-                    ss.activity_log = []
-                ss.activity_log.append({
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'action': 'Priority Updated',
-                    'details': f"Job: {priority_job}, Changed from P{old_priority} to P{new_priority}",
-                    'affected_items': priority_job
-                })
 
                 # ✅ Mark recomputation required
                 ss.triggered_by_priority_manager = True
@@ -1963,16 +1808,6 @@ def draw_outsourcing_policy(ss):
                     f"({before_pct:.1f}% → {after_pct:.1f}%)."
                 )
 
-                # ✅ LOG ACTIVITY
-                if "activity_log" not in ss:
-                    ss.activity_log = []
-                ss.activity_log.append({
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'action': 'Outsourcing Policy Updated',
-                    'details': f"Threshold changed to {new_threshold:.2f} | Outsourced: {before_outsourced} → {after_outsourced} ({after_pct:.1f}%) | {direction.title()} by {abs(change)} ops",
-                    'affected_items': f"{abs(change)} operations"
-                })
-
                 # ✅ Persistent reminder + navigation
                 ss.triggered_by_outsourcing_policy = True
                 ss.recalculate_all_heuristics = True
@@ -2034,16 +1869,6 @@ def draw_job_deleter(ss):
                 
                 # 8. CRITICAL: Remove from the effective times dataframe
                 ss.base_df_effective = ss.base_df_effective[~ss.base_df_effective['Operation_ID'].isin(ops_to_delete)].copy()
-
-                # ✅ LOG ACTIVITY
-                if "activity_log" not in ss:
-                    ss.activity_log = []
-                ss.activity_log.append({
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'action': 'Job Deleted',
-                    'details': f"Deleted Job: {job_to_delete} | Operations removed: {len(ops_to_delete)} ({', '.join(ops_to_delete)})",
-                    'affected_items': f"{job_to_delete} ({len(ops_to_delete)} ops)"
-                })
 
                 st.success(f"✅ Deleted {job_to_delete} ({len(ops_to_delete)} operations removed).")
 
@@ -2124,7 +1949,7 @@ def draw_operation_status_tab(ss):
         status_table = create_operation_status_table(ss.current_schedule.copy() if not ss.current_schedule is None else pd.DataFrame(), ss.df_ops.copy(), _cache_key=_cache_key)
 
         st.info(f"🔄 Cache Key: {getattr(ss, 'schedule_update_key', 'N/A')}")
-        st.dataframe(status_table, use_container_width=True, height=500)
+        st.dataframe(status_table, width='stretch', height=500)
 
 def draw_comparison_tab(ss):
     st.header("⚖ Heuristic Comparison")
@@ -2138,27 +1963,6 @@ def draw_comparison_tab(ss):
             st.write(f"df_metrics shape: {ss.df_metrics.shape}")
 
     st.info("**EXPLAINER**: This tab compares all 4 scheduling algorithms on the CURRENT dataset.")
-
-    # ✅ ACTIVITY LOG DISPLAY
-    if hasattr(ss, 'activity_log') and len(ss.activity_log) > 0:
-        with st.expander("📋 Activity Log (Recent Changes)", expanded=False):
-            log_df = pd.DataFrame(ss.activity_log)
-            # Reverse to show most recent first
-            log_df = log_df.iloc[::-1].reset_index(drop=True)
-            st.dataframe(
-                log_df[['timestamp', 'action', 'details', 'affected_items']], 
-                use_container_width=True,
-                height=300
-            )
-            
-            # Download activity log
-            log_csv = log_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="💾 Download Activity Log (CSV)",
-                data=log_csv,
-                file_name=f"activity_log_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                mime='text/csv'
-            )
 
     # ✅ Automatically recompute metrics when dataset changes
     recalc_flag = st.session_state.get('recalculate_all_heuristics', False)
@@ -2269,16 +2073,6 @@ def initialize_app(ss):
         ss.current_heuristic = None
     if "last_applied_heuristic" not in ss:
         ss.last_applied_heuristic = None
-    
-    # ✅ Initialize Activity Log
-    if "activity_log" not in ss:
-        ss.activity_log = []
-        ss.activity_log.append({
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'action': 'System Initialized',
-            'details': f'Loaded {len(df_ops)} operations, {len(df_machines)} machines',
-            'affected_items': 'All'
-        })
 
 
 

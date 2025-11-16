@@ -9,16 +9,19 @@ An intelligent, AI-powered CNC manufacturing scheduling system built with Stream
 ## 🌟 Features
 
 ### Core Scheduling Capabilities
-- **4 Scheduling Algorithms**:
-  - **SPT (Shortest Processing Time)**: Optimizes for throughput and fast completion
-  - **EDD (Earliest Due Date)**: Minimizes tardiness and late deliveries
-  - **CR (Critical Ratio)**: Balances urgency with processing complexity
-  - **PRIORITY**: Respects business-defined job priorities
+- **6 Scheduling Algorithms**:
+    - **SPT (Shortest Processing Time)**: Optimizes for throughput and fast completion
+    - **EDD (Earliest Due Date)**: Minimizes tardiness and late deliveries
+    - **CR (Critical Ratio)**: Balances urgency with processing complexity
+    - **PRIORITY**: Respects business-defined job priorities
+    - **BALANCED (Multi-factor Weighted)**: Blends priority, slack/urgency, and processing time for robust on-time delivery
+    - **DEADLINE_FIRST (Urgency-focused)**: Prioritizes operations with least slack to prevent deadline misses
 
 - **Multi-Machine Support**: Schedule operations across multiple CNC machines (MILLING, TURNING, GRINDING, DRILLING)
 - **Dynamic Job Management**: Add or delete jobs on-the-fly with real-time capacity analysis
-- **Make-or-Buy Decisions**: Intelligent outsourcing recommendations based on capacity and cost
+- **Make-or-Buy Decisions**: Intelligent outsourcing recommendations based on lead-time and cost threshold
 - **Material Changeover Penalties**: Accounts for setup time when switching between materials
+ - **Activity Log (Audit Trail)**: Every change (add/delete job, breakdowns, priority changes, heuristic runs, policy updates) is recorded and filterable
 
 ### AI-Powered Intelligence 🤖
 - **Algorithm Recommendation**: AI explains why a specific algorithm is best for your priorities
@@ -31,13 +34,41 @@ An intelligent, AI-powered CNC manufacturing scheduling system built with Stream
 - **Real-Time KPI Dashboard**: Track makespan, tardiness, utilization, costs
 - **Operation Status Table**: Monitor all jobs with completion status and critical ratios
 - **Comparison Matrix**: Side-by-side algorithm performance with composite scoring
+- **Outsourcing Analysis**: Explains why operations are outsourced and where to pull work back in-house
+- **Capacity Planning (What‑If)**: Simulate extra machines, extended shifts, and cost-threshold changes
 
 ### Advanced Features
 - **Capacity Analysis**: Pre-validate new jobs before adding to schedule
 - **Priority Management**: Adjust job priorities to reflect business needs
-- **Machine Breakdown Simulator**: Add dynamic downtime windows to any machine, visualized in Gantt charts
-- **Outsourcing Policy**: Configure complexity thresholds for outsourcing decisions
+- **Machine Breakdown Simulator (Simplified)**: Add downtime using minutes-only input; auto prompts to recompute
+- **Outsourcing Cost Threshold**: Slider to control make-or-buy; changes propagate to KPIs after recompute
 - **Export Functionality**: Download schedules as CSV for further processing
+
+--- 
+
+## 🧭 How It Works (Working)
+1. Load data from `data/` CSVs and validate the schema.
+2. Run a make‑or‑buy pass using a configurable cost‑threshold to tag each operation as `IN_HOUSE` or `OUTSOURCE` based on in‑house cost/time vs vendor cost/lead‑time.
+3. Schedule all in‑house operations with the selected heuristic (or compute all 6), honoring machine calendars, OEE, maintenance/breakdowns, setup penalties, and op precedence.
+4. Compute KPIs (makespan, total tardiness, on‑time %, utilization, total cost) and render charts/tables.
+5. Compare algorithms, apply the winner, and iterate. Any change (priority, breakdowns, threshold) triggers a recompute prompt and is recorded in the Activity Log.
+
+## 🎯 Purpose
+
+- Reduce outsourcing cost by pulling feasible work in‑house without missing due dates.
+- Increase on‑time delivery and shop visibility via transparent KPIs and what‑if tools.
+- Provide explainable analysis (outsourcing reasons, capacity levers) for informed decisions.
+
+## 🧰 Tech Stack
+
+- UI & runtime: Streamlit (Python)
+- Data: pandas, numpy
+- Visualization: plotly
+- Config/Secrets: python‑dotenv (optional)
+- AI insights: google‑generativeai (optional)
+- Export helpers: openpyxl
+
+See `requirements.txt` for exact versions.
 
 ---
 
@@ -104,7 +135,7 @@ The app will open in your browser at `http://localhost:8501`
 
 ### 1️⃣ Algorithm Comparison
 - Navigate to **"📊 Compare Algorithms"** tab
-- Click **"Compute All Algorithms"** to run all 4 heuristics
+- Click **"Compute All Algorithms"** to run all 6 heuristics (SPT, EDD, CR, PRIORITY, BALANCED, DEADLINE_FIRST)
 - Review the **comparison table** with composite scores
 - Adjust **priority weights** to match your business goals
 - Enable **AI Analysis** for detailed recommendations
@@ -135,22 +166,29 @@ The app will open in your browser at `http://localhost:8501`
 #### Machine Breakdown Simulator
 1. Expand **"⚙️ 3. Advanced Settings"** in sidebar
 2. Select machine from dropdown
-3. Set breakdown day and time
-4. Set duration (hours)
-5. Click **"🔧 Add Breakdown"**
-6. Click **"Compute All Algorithms"** to see impact
-7. View breakdowns in Gantt chart (red dashed rectangles with "🔧 DOWN" label)
-8. Check **"Show Current Maintenance/Breakdowns"** to see all windows
-9. Click **"Clear All Breakdowns"** to reset to original schedule
+3. Enter breakdown window in minutes (start time and duration)
+4. Click **"🔧 Add Breakdown"** — you'll be prompted to recompute
+5. Click **"Compute All Algorithms"** to see impact
+6. View breakdowns in Gantt chart (red dashed rectangles with "🔧 DOWN" label)
+7. Check **"Show Current Maintenance/Breakdowns"** to see all windows
+8. Click **"Clear All Breakdowns"** to reset to original schedule
 
 #### Priority Manager
 - Select job from dropdown
 - Choose new priority (1=urgent, 4=low)
-- Click **"Update Priority"** 
-- Recompute algorithms to see impact
+- Click **"Update Priority"** — you'll be prompted to recompute
+- Click **"Compute All Algorithms"** to update KPIs and schedules
 
-#### Outsourcing Policy
-- Adjust complexity thresholds for make-or-buy decisions
+#### Outsourcing Policy (Cost Threshold)
+- Use the slider to set the cost threshold for outsourcing decisions
+- Click **"Apply Threshold"** — you'll be prompted to recompute
+- Click **"Compute All Algorithms"** so KPIs and assignments reflect the new threshold
+
+#### Activity Log
+- Navigate to **"📜 Activity Log"** to view a filterable audit trail of jobs, breakdowns, priorities, heuristic computations/applications, and policy changes
+
+#### Capacity Planning
+- Navigate to **"📐 Capacity Planning"** to run what‑if scenarios (add machines, extend shifts, adjust threshold) and see projected outsourcing/utilization impacts
 
 ---
 
@@ -277,10 +315,28 @@ ForbesMarshall/
 
 ---
 
+## 🏗️ Architecture & Data Flow (Technical Stuff)
+
+- **Data Layer**: CSV inputs → pandas DataFrames → validation and normalization
+- **Make‑or‑Buy Module**: Computes in‑house vs outsource cost/time; applies `cost_threshold` to set `Assignment_Type`
+- **Scheduling Engine**: Heuristic selector (SPT, EDD, CR, PRIORITY, BALANCED, DEADLINE_FIRST) + machine calendars + setup penalties
+- **Metrics/KPIs**: Makespan, total tardiness, on‑time %, utilization, total cost, per‑machine details
+- **Visualization**: Plotly Gantt + Streamlit tables
+- **What‑If Tools**: Capacity Planning (machines, shifts, thresholds)
+- **Audit Trail**: Activity Log with filter/export
+
+Key configurable levers:
+- `cost_threshold` (outsourcing aggressiveness)
+- Job `Priority` per `Job_ID`
+- Machine maintenance/breakdowns (minutes)
+- Eligible machine mapping per `Op_Type`
+
+---
+
 ## 🎨 Screenshots
 
 ### Algorithm Comparison
-The main comparison view shows all 4 algorithms with composite scoring:
+The main comparison view shows all 6 algorithms with composite scoring:
 - Green highlighting for best scores
 - Weighted ranking based on your priorities
 - One-click algorithm application
@@ -347,7 +403,7 @@ streamlit run cnc-scheduling.py
 ### Test Workflow
 1. ✅ App loads successfully
 2. ✅ Click "Compute All Algorithms" (sidebar)
-3. ✅ Comparison table displays 4 rows
+3. ✅ Comparison table displays 6 rows
 4. ✅ Apply an algorithm → View schedule
 5. ✅ Gantt chart renders
 6. ✅ KPI dashboard shows metrics
@@ -361,7 +417,7 @@ streamlit run cnc-scheduling.py
 ### Benchmarks (200 jobs, 2 machines)
 - **Data Loading**: ~2-3 seconds
 - **Single Algorithm**: ~3-5 seconds
-- **All 4 Algorithms**: ~15-20 seconds
+- **All 6 Algorithms**: ~20-28 seconds
 - **AI Analysis**: ~5-10 seconds
 - **Gantt Chart Render**: ~1-2 seconds
 
@@ -369,6 +425,22 @@ streamlit run cnc-scheduling.py
 - Use `SAMPLE_SIZE` for faster testing
 - Reduce AI analysis frequency
 - Clear cache periodically (Reset button)
+
+---
+
+## 🚀 Future Scope & Improvements
+
+- **Exact Optimization**: Add MILP/CP-SAT models (OR‑Tools, Pyomo) for optimal scheduling under constraints; use heuristics as warm starts.
+- **Learning‑based Scheduling**: Reinforcement learning or contextual bandits to adapt dispatching rules by shop state.
+- **Predictive Maintenance**: Failure‑probability driven preventive maintenance windows; integrate sensor/OEE feeds.
+- **Dynamic Vendor Modeling**: Price ladders, lead‑time SLAs, and capacity ceilings per vendor with historical performance.
+- **Cost Model Refinements**: Expose in‑house hourly rate, setup penalties, and overhead absorption as configurable admin settings.
+- **Scenario Management**: Save/compare what‑if scenarios (machines, shifts, thresholds) with diff reports.
+- **Multi‑User & Auth**: Roles (Planner, Supervisor, Viewer), approvals for policy changes, AzureAD/Google SSO.
+- **Database & API**: Persist data in Postgres; REST/GraphQL API for MES/ERP integration.
+- **Realtime Dispatch**: Event‑driven rescheduling on job arrivals/breakdowns with minimal schedule disruption.
+- **Simulation & Robustness**: Monte‑Carlo variability (proc/setup/arrival) with risk‑aware KPIs and buffers.
+- **QA & Testing**: Unit tests for decision logic, deterministic seeds, CI pipeline; profiling for hotspots.
 
 ---
 
