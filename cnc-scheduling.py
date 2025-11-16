@@ -8,6 +8,26 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
 import time
+import os
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+# Load environment variables
+load_dotenv()
+
+# Configure Gemini AI
+try:
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel('gemini-flash-latest')
+        AI_ENABLED = True
+    else:
+        AI_ENABLED = False
+        st.warning("⚠️ Gemini API key not found in .env file. AI insights disabled.")
+except Exception as e:
+    AI_ENABLED = False
+    print(f"AI initialization failed: {e}")
 
 def trigger_recompute_prompt(ss, label: str):
     """
@@ -32,6 +52,46 @@ def trigger_recompute_prompt(ss, label: str):
 
     # Small visual feedback toast
     st.toast("⚙ Update registered — ready for heuristic recomputation.", icon="⚙️")
+
+# ---------------------------
+# AI Insights Helper
+# ---------------------------
+def get_ai_insights(prompt, context_data=None):
+    """
+    Generate AI-powered insights using Gemini.
+    
+    Args:
+        prompt: The question or topic to get insights about
+        context_data: Optional dict with relevant data to provide context
+    
+    Returns:
+        str: AI-generated insights or error message
+    """
+    if not AI_ENABLED:
+        return "❌ AI insights are disabled. Please add GEMINI_API_KEY to your .env file."
+    
+    try:
+        # Build enhanced prompt with context
+        full_prompt = f"""
+You are an expert in manufacturing scheduling, operations research, and production planning.
+You are analyzing a CNC job scheduling system.
+
+{prompt}
+"""
+        
+        if context_data:
+            full_prompt += "\n\nContext Data:\n"
+            for key, value in context_data.items():
+                full_prompt += f"- {key}: {value}\n"
+        
+        full_prompt += "\n\nProvide clear, actionable insights in 3-5 concise bullet points. Be specific and practical."
+        
+        # Generate response
+        response = gemini_model.generate_content(full_prompt)
+        return response.text
+    
+    except Exception as e:
+        return f"❌ Error generating AI insights: {str(e)}"
 
 # ---------------------------
 # Helper: make debug visible
@@ -1859,6 +1919,32 @@ def draw_breakdown_simulator(ss):
                         if outsourced_count > 0:
                             st.info(f"📦 {outsourced_count} operation(s) reassigned to OUTSOURCE due to breakdown conflict")
                         st.info(f"🔄 Remaining operations will be rescheduled after breakdown window (after {bd_end} min)")
+                        
+                        # 🤖 AI Breakdown Impact Analysis
+                        if AI_ENABLED:
+                            context = {
+                                "Machine": bd_machine,
+                                "Breakdown Start (min)": bd_start,
+                                "Breakdown Duration (min)": bd_duration,
+                                "Affected Operations": len(affected_ops),
+                                "Auto-Outsourced": outsourced_count,
+                                "Affected Operation IDs": [op['Operation_ID'] for op in affected_ops][:5]  # First 5
+                            }
+                            
+                            prompt = f"""
+A machine breakdown has occurred on {bd_machine}.
+
+Analyze:
+1. Immediate impact on production schedule and delivery commitments
+2. Cost implications (outsourcing vs delays)
+3. Risk mitigation strategies for affected operations
+4. Recommendations for preventing similar disruptions
+"""
+                            
+                            with st.expander("🤖 AI Breakdown Impact Analysis", expanded=False):
+                                with st.spinner("🤖 Analyzing breakdown impact..."):
+                                    insights = get_ai_insights(prompt, context)
+                                    st.markdown(insights)
                     
                     st.info("💡 Click **'🧪 Compute All Heuristics'** to recompute schedules with breakdown enforced.")
 
@@ -2101,6 +2187,34 @@ def draw_kpi_dashboard(ss):
     col1.metric("Makespan (Days)", metrics['Makespan_Days'])
     col2.metric("Total Tardiness (Days)", metrics['Total_Tardiness_Days'])
     col3.metric("On-Time %", metrics['On_Time_%'])
+    
+    # 🤖 AI Insights Button
+    if AI_ENABLED and st.button("🤖 Get AI Insights on Performance", key="ai_kpi_insights"):
+        with st.spinner("🤖 AI analyzing performance metrics..."):
+            context = {
+                "Heuristic": ss.current_heuristic,
+                "Makespan (Days)": metrics['Makespan_Days'],
+                "Total Tardiness (Days)": metrics['Total_Tardiness_Days'],
+                "On-Time Delivery %": metrics['On_Time_%'],
+                "Machine Utilization %": metrics['Machine_Utilization_%'],
+                "Total Cost ($)": metrics['Total_Cost_$'],
+                "Late Operations": metrics.get('Late_Operations', 0),
+                "Total Operations": metrics.get('Total_Operations', 0)
+            }
+            
+            prompt = f"""
+Analyze this CNC scheduling performance using the {ss.current_heuristic} heuristic.
+
+Identify:
+1. Key strengths of the current schedule
+2. Performance bottlenecks or concerns
+3. Specific actionable recommendations to improve metrics
+4. Whether a different heuristic might perform better and why
+"""
+            
+            insights = get_ai_insights(prompt, context)
+            st.info("🤖 **AI-Powered Performance Analysis:**")
+            st.markdown(insights)
 
 
 def draw_gantt_tab(ss):
@@ -2116,6 +2230,55 @@ def draw_gantt_tab(ss):
             machines_order=ss.machine_order
         )
         st.plotly_chart(gantt_fig, use_container_width=True)
+        
+        # 🤖 AI Gantt Chart Insights
+        if AI_ENABLED and not ss.current_schedule.empty:
+            if st.button("🤖 Get AI Insights on Schedule Visualization", key="ai_gantt_insights"):
+                with st.spinner("🤖 AI analyzing schedule timeline..."):
+                    machine_utilization = {}
+                    makespan = ss.current_schedule['End_Time'].max()
+                    
+                    for machine in ss.df_machines['Machine_ID'].unique():
+                        machine_ops = ss.current_schedule[ss.current_schedule['Machine_ID'] == machine]
+                        if not machine_ops.empty:
+                            productive_time = (machine_ops['Setup_Time'].sum() + 
+                                             machine_ops['Proc_Time'].sum() + 
+                                             machine_ops['Transfer_Time'].sum())
+                            util = (productive_time / makespan * 100) if makespan > 0 else 0
+                            machine_utilization[machine] = round(util, 1)
+                    
+                    # Check for breakdowns in schedule
+                    breakdown_count = 0
+                    for _, machine in ss.df_machines.iterrows():
+                        maint = machine.get('Maintenance_Window')
+                        if maint:
+                            if isinstance(maint, list):
+                                breakdown_count += len(maint)
+                            elif isinstance(maint, dict):
+                                breakdown_count += 1
+                    
+                    context = {
+                        "Heuristic": ss.current_heuristic,
+                        "Makespan (min)": makespan,
+                        "Total Operations Scheduled": len(ss.current_schedule),
+                        "Machine Utilization": machine_utilization,
+                        "Active Breakdowns": breakdown_count,
+                        "Machines": len(ss.df_machines)
+                    }
+                    
+                    prompt = f"""
+Analyze this Gantt chart visualization of the CNC scheduling timeline.
+
+Provide insights on:
+1. Load balancing across machines (identify overloaded or underutilized machines)
+2. Potential scheduling bottlenecks or idle time gaps
+3. Impact of any breakdowns/maintenance windows on the schedule
+4. Recommendations for better resource allocation
+"""
+                    
+                    insights = get_ai_insights(prompt, context)
+                    st.info("🤖 **AI Schedule Timeline Analysis:**")
+                    st.markdown(insights)
 
 def draw_operation_status_tab(ss):
     st.header(f"📋 Operation Status ({ss.current_heuristic or 'N/A'})")
@@ -2125,6 +2288,38 @@ def draw_operation_status_tab(ss):
 
         st.info(f"🔄 Cache Key: {getattr(ss, 'schedule_update_key', 'N/A')}")
         st.dataframe(status_table, use_container_width=True, height=500)
+        
+        # 🤖 AI Operation Status Insights
+        if AI_ENABLED and not status_table.empty and 'Status' in status_table.columns:
+            if st.button("🤖 Get AI Insights on Operation Status", key="ai_operation_insights"):
+                with st.spinner("🤖 AI analyzing operation status..."):
+                    late_ops = len(status_table[status_table['Status'] == '⏰ Late']) if 'Status' in status_table.columns else 0
+                    pending_ops = len(status_table[status_table['Status'] == '⏳ Pending']) if 'Status' in status_table.columns else 0
+                    completed_ops = len(status_table[status_table['Status'] == '✅ Completed']) if 'Status' in status_table.columns else 0
+                    outsourced_ops = len(status_table[status_table['Assignment'] == 'OUTSOURCE']) if 'Assignment' in status_table.columns else 0
+                    
+                    context = {
+                        "Total Operations": len(status_table),
+                        "Late Operations": late_ops,
+                        "Pending Operations": pending_ops,
+                        "Completed Operations": completed_ops,
+                        "Outsourced Operations": outsourced_ops,
+                        "Current Heuristic": ss.current_heuristic or 'None'
+                    }
+                    
+                    prompt = f"""
+Analyze the current operation status distribution in the CNC scheduling system.
+
+Provide:
+1. Assessment of schedule health based on late/pending/completed ratios
+2. Potential bottlenecks or scheduling inefficiencies
+3. Recommendations for operations that might benefit from priority adjustments
+4. Suggestions for optimizing the mix of in-house vs outsourced work
+"""
+                    
+                    insights = get_ai_insights(prompt, context)
+                    st.info("🤖 **AI Operation Status Analysis:**")
+                    st.markdown(insights)
 
 def draw_comparison_tab(ss):
     st.header("⚖ Heuristic Comparison")
@@ -2139,26 +2334,199 @@ def draw_comparison_tab(ss):
 
     st.info("**EXPLAINER**: This tab compares all 4 scheduling algorithms on the CURRENT dataset.")
 
+    # 🤖 AI DATASET INSIGHTS SECTION
+    if AI_ENABLED:
+        with st.expander("🤖 AI-Generated Dataset Insights", expanded=False):
+            st.caption("📊 **Comprehensive Dataset Analysis**")
+            
+            if st.button("🚀 Generate Dataset Insights", key="ai_dataset_insights", type="primary", use_container_width=True):
+                with st.spinner("🤖 AI analyzing entire dataset and scheduling environment..."):
+                    # Gather comprehensive dataset statistics
+                    total_jobs = ss.base_df_ops['Job_ID'].nunique() if hasattr(ss, 'base_df_ops') else 0
+                    total_operations = len(ss.base_df_ops) if hasattr(ss, 'base_df_ops') else 0
+                    total_machines = len(ss.base_df_machines) if hasattr(ss, 'base_df_machines') else 0
+                    
+                    # Operation type distribution
+                    op_type_dist = ss.base_df_ops['Op_Type'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Op_Type' in ss.base_df_ops.columns else {}
+                    
+                    # Assignment type distribution
+                    assignment_dist = ss.base_df_ops['Assignment_Type'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Assignment_Type' in ss.base_df_ops.columns else {}
+                    
+                    # Priority distribution
+                    priority_dist = ss.base_df_ops['Priority'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Priority' in ss.base_df_ops.columns else {}
+                    
+                    # Material type distribution
+                    material_dist = ss.base_df_ops['Mat_Type'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Mat_Type' in ss.base_df_ops.columns else {}
+                    
+                    # Time-based metrics
+                    avg_proc_time = ss.base_df_ops['Total_Proc_Min'].mean() if hasattr(ss, 'base_df_ops') and 'Total_Proc_Min' in ss.base_df_ops.columns else 0
+                    avg_setup_time = ss.base_df_ops['Setup_Time'].mean() if hasattr(ss, 'base_df_ops') and 'Setup_Time' in ss.base_df_ops.columns else 0
+                    
+                    # Deadline analysis
+                    avg_release_day = ss.base_df_ops['Release_Day'].mean() if hasattr(ss, 'base_df_ops') and 'Release_Day' in ss.base_df_ops.columns else 0
+                    avg_due_day = ss.base_df_ops['Due_Day'].mean() if hasattr(ss, 'base_df_ops') and 'Due_Day' in ss.base_df_ops.columns else 0
+                    avg_lead_time = avg_due_day - avg_release_day
+                    
+                    # Machine availability
+                    machines_with_maintenance = 0
+                    if hasattr(ss, 'base_df_machines'):
+                        for _, machine in ss.base_df_machines.iterrows():
+                            if machine.get('Maintenance_Window'):
+                                machines_with_maintenance += 1
+                    
+                    # Cost analysis
+                    avg_outsource_cost = 0
+                    if hasattr(ss, 'base_df_ops') and 'Outsource_Cost' in ss.base_df_ops.columns:
+                        outsourced = ss.base_df_ops[ss.base_df_ops['Assignment_Type'] == 'OUTSOURCE']
+                        if not outsourced.empty:
+                            avg_outsource_cost = outsourced['Outsource_Cost'].mean()
+                    
+                    context = {
+                        "Total Jobs": total_jobs,
+                        "Total Operations": total_operations,
+                        "Total Machines": total_machines,
+                        "Operation Types": op_type_dist,
+                        "Assignment Distribution": assignment_dist,
+                        "Priority Distribution": priority_dist,
+                        "Material Types": material_dist,
+                        "Average Processing Time (min)": round(avg_proc_time, 2),
+                        "Average Setup Time (min)": round(avg_setup_time, 2),
+                        "Average Lead Time (days)": round(avg_lead_time, 2),
+                        "Machines with Maintenance/Breakdown": machines_with_maintenance,
+                        "Average Outsourcing Cost ($)": round(avg_outsource_cost, 2),
+                        "Current Outsourcing Threshold": ss.cost_threshold if hasattr(ss, 'cost_threshold') else 'N/A'
+                    }
+                    
+                    prompt = f"""
+You are analyzing a CNC manufacturing dataset with {total_jobs} jobs and {total_operations} operations across {total_machines} machines.
+
+Provide a comprehensive analysis covering:
+
+1. **Dataset Characteristics & Complexity**
+   - Overall workload assessment
+   - Operation mix diversity
+   - Material variety implications
+
+2. **Capacity & Resource Analysis**
+   - Machine utilization potential
+   - Bottleneck risks based on operation types
+   - Maintenance impact on capacity
+
+3. **Scheduling Challenges**
+   - Time constraint analysis (lead times vs processing times)
+   - Priority distribution implications
+   - Setup time vs processing time ratio concerns
+
+4. **Make-or-Buy Strategy**
+   - Current outsourcing rate assessment
+   - Cost-effectiveness of current threshold
+   - Strategic recommendations for in-house vs outsourcing
+
+5. **Risk Factors & Opportunities**
+   - Identify potential scheduling risks
+   - Optimization opportunities
+   - Data-driven recommendations for improved performance
+
+6. **Operational Insights**
+   - Workload distribution patterns
+   - Material setup implications
+   - Suggested operational improvements
+
+Provide specific, actionable insights based on the data. Be concise but comprehensive.
+"""
+                    
+                    insights = get_ai_insights(prompt, context)
+                    
+                    # Display insights in a structured format
+                    st.markdown("---")
+                    st.markdown("### 📊 **AI Dataset Analysis Report**")
+                    st.markdown(insights)
+                    st.markdown("---")
+                    
+                    # Show key statistics
+                    st.markdown("#### 📈 **Key Dataset Statistics**")
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total Jobs", total_jobs)
+                        st.metric("Total Operations", total_operations)
+                    with col2:
+                        st.metric("Total Machines", total_machines)
+                        st.metric("Machines w/ Maintenance", machines_with_maintenance)
+                    with col3:
+                        st.metric("Avg Processing (min)", f"{avg_proc_time:.1f}")
+                        st.metric("Avg Setup (min)", f"{avg_setup_time:.1f}")
+                    with col4:
+                        st.metric("Avg Lead Time (days)", f"{avg_lead_time:.1f}")
+                        outsource_pct = (assignment_dist.get('OUTSOURCE', 0) / total_operations * 100) if total_operations > 0 else 0
+                        st.metric("Outsourced %", f"{outsource_pct:.1f}%")
+                    
+                    # Distribution charts
+                    if op_type_dist:
+                        st.markdown("#### 📊 **Operation Type Distribution**")
+                        st.bar_chart(pd.Series(op_type_dist))
+                    
+                    if priority_dist:
+                        st.markdown("#### ⚡ **Priority Distribution**")
+                        st.bar_chart(pd.Series(priority_dist))
+
     # ✅ ACTIVITY LOG DISPLAY
     if hasattr(ss, 'activity_log') and len(ss.activity_log) > 0:
-        with st.expander("📋 Activity Log (Recent Changes)", expanded=False):
+        activity_count = len(ss.activity_log)
+        with st.expander(f"📋 Activity Log ({activity_count} activities recorded)", expanded=True):
             log_df = pd.DataFrame(ss.activity_log)
             # Reverse to show most recent first
             log_df = log_df.iloc[::-1].reset_index(drop=True)
+            
+            st.caption("**Most Recent Activities First** ⬇️")
             st.dataframe(
                 log_df[['timestamp', 'action', 'details', 'affected_items']], 
                 use_container_width=True,
                 height=300
             )
             
-            # Download activity log
-            log_csv = log_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="💾 Download Activity Log (CSV)",
-                data=log_csv,
-                file_name=f"activity_log_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                mime='text/csv'
-            )
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption(f"📊 Total: {activity_count} logged activities")
+            with col2:
+                # Download activity log
+                log_csv = log_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="💾 Download CSV",
+                    data=log_csv,
+                    file_name=f"activity_log_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime='text/csv',
+                    use_container_width=True
+                )
+            
+            # 🤖 AI Activity Log Analysis
+            if AI_ENABLED:
+                if st.button("🤖 Analyze Activity Patterns", key="ai_activity_analysis"):
+                    with st.spinner("🤖 AI analyzing activity patterns..."):
+                        recent_activities = log_df.head(10).to_dict('records')
+                        action_counts = log_df['action'].value_counts().to_dict()
+                        
+                        context = {
+                            "Total Activities": activity_count,
+                            "Recent Activities (last 10)": [f"{a['timestamp']}: {a['action']}" for a in recent_activities],
+                            "Action Distribution": action_counts,
+                            "Most Common Action": log_df['action'].mode()[0] if not log_df['action'].mode().empty else "N/A"
+                        }
+                        
+                        prompt = f"""
+Analyze the activity log patterns from this CNC scheduling system.
+
+Provide insights on:
+1. Overall system usage patterns and trends
+2. Frequency and timing of critical actions (breakdowns, priority changes, etc.)
+3. Potential operational inefficiencies or concerns based on activity patterns
+4. Recommendations for improving workflow based on observed activities
+"""
+                        
+                        insights = get_ai_insights(prompt, context)
+                        st.info("🤖 **AI Activity Pattern Analysis:**")
+                        st.markdown(insights)
+    else:
+        st.info("📋 **Activity Log**: No activities recorded yet. Actions will appear here once you start using the system.")
 
     # ✅ Automatically recompute metrics when dataset changes
     recalc_flag = st.session_state.get('recalculate_all_heuristics', False)
@@ -2202,6 +2570,35 @@ def draw_comparison_tab(ss):
             st.success(f"🏆 Recommended heuristic (by lowest Total Tardiness): **{best_row['Heuristic']}**")
             st.write("Recommendation details:")
             st.write(best_row.to_dict())
+            
+            # 🤖 AI Insights Button for Heuristic Comparison
+            if AI_ENABLED:
+                col1, col2 = st.columns([3, 1])
+                with col2:
+                    if st.button("🤖 AI Analysis", key="ai_heuristic_comparison", use_container_width=True):
+                        with st.spinner("🤖 AI comparing all heuristics..."):
+                            comparison_data = ss.df_metrics.to_dict('records')
+                            context = {
+                                "Number of Heuristics": len(comparison_data),
+                                "Comparison Metrics": comparison_data,
+                                "Recommended": best_row['Heuristic'],
+                                "Total Operations": len(ss.base_df_ops),
+                                "Total Machines": len(ss.base_df_machines)
+                            }
+                            
+                            prompt = f"""
+Compare these {len(comparison_data)} scheduling heuristics: {', '.join([h['Heuristic'] for h in comparison_data])}.
+
+Provide:
+1. Why {best_row['Heuristic']} is recommended based on the metrics
+2. Trade-offs between different heuristics
+3. When you might choose a different heuristic despite the recommendation
+4. Specific business scenarios where each heuristic excels
+"""
+                            
+                            insights = get_ai_insights(prompt, context)
+                            st.info("🤖 **AI Heuristic Comparison Analysis:**")
+                            st.markdown(insights)
         except Exception:
             pass
 
