@@ -941,8 +941,9 @@ def create_gantt_chart(
 
     x_min = df_real["Start_Time"].min()
     x_max = df_real["End_Time"].max()
-    df_real["Start_Shifted"] = df_real["Start_Time"] - x_min
-    df_real["End_Shifted"] = df_real["End_Time"] - x_min
+    # Use actual time instead of shifting to 0 for better scale understanding
+    df_real["Start_Shifted"] = df_real["Start_Time"]
+    df_real["End_Shifted"] = df_real["End_Time"]
 
     fig = go.Figure()
 
@@ -1023,7 +1024,7 @@ def create_gantt_chart(
     pad = max((x_max - x_min) * 0.05, 100)
     fig.update_layout(
         title=dict(text=title, font=dict(size=16, color="#E0E0E0")),
-        xaxis_title="Time (minutes, shifted)",
+        xaxis_title="Time (minutes from start)",
         yaxis_title="Machine",
         height=600,
         plot_bgcolor="rgba(0,0,0,0)",
@@ -1033,7 +1034,9 @@ def create_gantt_chart(
         xaxis=dict(
             gridcolor="rgba(128,128,128,0.2)",
             zerolinecolor="rgba(128,128,128,0.3)",
-            color="#E0E0E0"
+            color="#E0E0E0",
+            tickformat=",.0f",
+            dtick=500
         ),
         yaxis=dict(
             gridcolor="rgba(128,128,128,0.2)",
@@ -1046,7 +1049,7 @@ def create_gantt_chart(
         autorange="reversed",
         type="category",
     )
-    fig.update_xaxes(range=[0 - pad, (x_max - x_min) + pad], showgrid=True)
+    fig.update_xaxes(range=[x_min - pad, x_max + pad], showgrid=True)
     return fig
 
 
@@ -1987,6 +1990,9 @@ def draw_breakdown_simulator(ss):
                         
                         # 🤖 AI Breakdown Impact Analysis
                         if AI_ENABLED:
+                            st.markdown("---")
+                            st.markdown("#### 🤖 AI Breakdown Impact Analysis")
+                            
                             context = {
                                 "Machine": bd_machine,
                                 "Breakdown Start (min)": bd_start,
@@ -2006,10 +2012,10 @@ Analyze:
 4. Recommendations for preventing similar disruptions
 """
                             
-                            with st.expander("🤖 AI Breakdown Impact Analysis", expanded=False):
-                                with st.spinner("🤖 Analyzing breakdown impact..."):
-                                    insights = get_ai_insights(prompt, context)
-                                    st.markdown(insights)
+                            with st.spinner("🤖 Analyzing breakdown impact..."):
+                                insights = get_ai_insights(prompt, context)
+                                st.markdown(insights)
+                            st.markdown("---")
                     
                     st.info("💡 Click **'🧪 Compute All Heuristics'** to recompute schedules with breakdown enforced.")
 
