@@ -8,26 +8,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
 import time
-import os
-from dotenv import load_dotenv
-import google.generativeai as genai
-
-# Load environment variables
-load_dotenv()
-
-# Configure Gemini AI
-try:
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-flash-latest')
-        AI_ENABLED = True
-    else:
-        AI_ENABLED = False
-        st.warning("⚠️ Gemini API key not found in .env file. AI insights disabled.")
-except Exception as e:
-    AI_ENABLED = False
-    print(f"AI initialization failed: {e}")
 
 def trigger_recompute_prompt(ss, label: str):
     """
@@ -52,67 +32,6 @@ def trigger_recompute_prompt(ss, label: str):
 
     # Small visual feedback toast
     st.toast("⚙ Update registered — ready for heuristic recomputation.", icon="⚙️")
-
-# ---------------------------
-# AI Insights Helper
-# ---------------------------
-def get_ai_insights(prompt, context_data=None):
-    """
-    Generate AI-powered insights using Gemini.
-    
-    Args:
-        prompt: The question or topic to get insights about
-        context_data: Optional dict with relevant data to provide context
-    
-    Returns:
-        str: AI-generated insights or error message
-    """
-    if not AI_ENABLED:
-        return "❌ AI insights are disabled. Please add GEMINI_API_KEY to your .env file."
-    
-    try:
-        # Build enhanced prompt with context
-        full_prompt = f"""
-You are an expert in manufacturing scheduling, operations research, and production planning with deep knowledge of heuristic algorithms.
-
-**SYSTEM CONTEXT:**
-This is a CNC job scheduling application with:
-- 6 available heuristics: 
-  * SPT (Shortest Processing Time) - Minimizes makespan
-  * EDD (Earliest Due Date) - Minimizes tardiness
-  * CR (Critical Ratio) - Balances urgency and slack
-  * PRIORITY - Uses job priority levels
-  * WEIGHTED - Multi-objective (40% urgency, 30% efficiency, 30% priority)
-  * SLACK - Minimum slack time (prioritizes jobs with least flexibility)
-- Capability to simulate machine breakdowns and maintenance windows
-- Make-or-buy decisions with configurable outsourcing cost thresholds
-- Real-time schedule visualization and performance metrics
-
-**IMPORTANT GUIDELINES:**
-1. Provide SPECIFIC, ACTIONABLE recommendations the user can implement in THIS tool
-2. Reference actual machine IDs, metrics, and heuristics from the context data
-3. Avoid generic consulting advice - focus on immediate optimization opportunities
-4. If performance is poor, suggest switching to a different heuristic and explain why
-5. Quantify impact where possible (e.g., "switching to WEIGHTED could reduce tardiness by ~20%")
-6. Keep responses concise (300-500 words) and structured with clear headings
-7. Acknowledge when data looks unusual and suggest verification steps
-
-{prompt}
-"""
-        
-        if context_data:
-            full_prompt += "\n\nContext Data:\n"
-            for key, value in context_data.items():
-                full_prompt += f"- {key}: {value}\n"
-        
-        full_prompt += "\n\nProvide clear, actionable insights in 3-5 concise bullet points. Be specific and practical."
-        
-        # Generate response
-        response = gemini_model.generate_content(full_prompt)
-        return response.text
-    
-    except Exception as e:
-        return f"❌ Error generating AI insights: {str(e)}"
 
 # ---------------------------
 # Helper: make debug visible
@@ -172,7 +91,7 @@ def get_eligible_machines(op_type):
     else:
         return []
 
-def calculate_inhouse_cost(operation, df_effective, hourly_rate=30):
+def calculate_inhouse_cost(operation, df_effective, hourly_rate=50):
     op_id = operation['Operation_ID']
     eligible = df_effective[df_effective['Operation_ID'] == op_id]
 
@@ -186,16 +105,12 @@ def calculate_inhouse_cost(operation, df_effective, hourly_rate=30):
 
     return total_cost, best_option['Machine_ID']
 
-def make_or_buy_decision(operation, df_effective, cost_threshold=0.9, hourly_rate=30):
+def make_or_buy_decision(operation, df_effective, cost_threshold=0.9, hourly_rate=50):
     inhouse_cost, best_machine = calculate_inhouse_cost(operation, df_effective, hourly_rate)
     inhouse_time = operation.get('Total_Proc_Min', operation.get('Proc_Time_per_Unit', 0) * operation.get('Quantity', 1)) + operation.get('Setup_Time', 0)
     outsource_cost = operation.get('Outsource_Cost', np.inf)
     outsource_time = operation.get('Outsource_Time_Min', np.inf)
 
-    # If no vendor option exists (cost = 0 or inf), always do in-house
-    if outsource_cost <= 0 or outsource_cost == np.inf:
-        return 'IN_HOUSE', inhouse_cost, 'No vendor available'
-    
     earliest_start = operation.get('Release_Time_Min', 0)
     earliest_finish = earliest_start + inhouse_time
     can_meet_deadline = earliest_finish <= operation.get('Due_Time_Min', np.inf)
@@ -219,7 +134,7 @@ def get_setup_penalty(prev_material, next_material, df_penalties):
 # Metrics (unchanged logic)
 # ---------------------------
 
-def calculate_metrics(schedule_df, df_ops, heuristic_name, hourly_rate=30):
+def calculate_metrics(schedule_df, df_ops, heuristic_name):
     if schedule_df is None or schedule_df.empty:
         return {
             'Heuristic': heuristic_name,
@@ -267,7 +182,7 @@ def calculate_metrics(schedule_df, df_ops, heuristic_name, hourly_rate=30):
             machine_util = (machine_productive / makespan_min) * 100 if makespan_min > 0 else 0
             machine_utilization[machine_id] = round(machine_util, 1)
 
-    inhouse_cost = schedule_df['Proc_Time'].sum() / 60 * hourly_rate if 'Proc_Time' in schedule_df.columns else 0
+    inhouse_cost = schedule_df['Proc_Time'].sum() / 60 * 50 if 'Proc_Time' in schedule_df.columns else 0
     outsource_cost = df_ops[df_ops['Assignment_Type'] == 'OUTSOURCE']['Outsource_Cost'].sum() if 'Outsource_Cost' in df_ops.columns else 0
     total_cost = inhouse_cost + outsource_cost
 
@@ -291,7 +206,7 @@ def calculate_metrics(schedule_df, df_ops, heuristic_name, hourly_rate=30):
     }
 
 def refresh_all_heuristics_metrics(ss):
-    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK']
+    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
     metrics = []
 
     for heur in heuristics:
@@ -366,14 +281,8 @@ class CNCScheduler:
         maintenance_list.sort(key=lambda mw: mw.get('start', 0))
 
         # ✅ Adjust for any overlap between current availability and maintenance windows
-        # Keep iterating until we find a time slot that doesn't conflict with any breakdown/maintenance
-        max_iterations = 100  # Prevent infinite loops
-        iteration = 0
-        
-        while iteration < max_iterations:
+        while True:
             adjusted = False
-            end_time = current_avail + duration
-            
             for mw in maintenance_list:
                 mw_start = mw.get('start', 0)
                 mw_end = mw.get('end', 0)
@@ -382,21 +291,21 @@ class CNCScheduler:
                 if mw_end <= mw_start:
                     continue
 
-                # ✅ CRITICAL: Check if operation [current_avail, end_time] overlaps breakdown [mw_start, mw_end]
-                # Overlap occurs when: operation_start < breakdown_end AND operation_end > breakdown_start
+                end_time = current_avail + duration
+
+                # Check if this job would overlap the maintenance window
                 overlap = (current_avail < mw_end) and (end_time > mw_start)
-                
                 if overlap:
-                    # ✅ Move operation to start AFTER the breakdown/maintenance window
+                    # Move start to after maintenance end
                     current_avail = mw_end
                     adjusted = True
-                    break  # Recheck all windows with new start time
-                    
+                    break  # Recheck all windows again
             if not adjusted:
-                break  # No conflicts found, we have a valid time slot
-            iteration += 1
+                break
 
-        # ✅ Return the earliest available start time (do NOT update machine_availability here)
+        # ✅ Update machine availability to reflect the new time slot
+        self.machine_availability[machine_id] = current_avail + duration
+
         return current_avail
 
 
@@ -489,7 +398,6 @@ class CNCScheduler:
             'Tardiness': max(0, end_time - operation.get('Due_Time_Min', 0))
         })
 
-        # ✅ Update machine availability to the end of this operation
         self.machine_availability[machine_id] = end_time
         self.machine_last_material[machine_id] = operation.get('Mat_Type', None)
         self.op_completion_times[op_id] = end_time
@@ -507,10 +415,6 @@ class CNCScheduler:
             rule = "CR"
         elif heuristic == 'PRIORITY':
             rule = "PRIORITY"
-        elif heuristic == 'WEIGHTED':
-            rule = "WEIGHTED (Multi-Objective)"
-        elif heuristic == 'SLACK':
-            rule = "SLACK (Minimum Slack)"
         else:
             rule = "SPT (Default)"
 
@@ -536,42 +440,6 @@ class CNCScheduler:
                 available_ops,
                 key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'])
             )
-        elif heuristic == 'WEIGHTED':
-            # 🆕 Multi-objective weighted heuristic
-            # Balances: urgency (40%), processing efficiency (30%), priority (30%)
-            def weighted_score(op_tuple):
-                op = op_tuple[0]
-                earliest = op_tuple[1]
-                
-                # Normalize metrics to 0-1 scale
-                max_proc = max([x[0]['Total_Proc_Min'] for x in available_ops])
-                max_due = max([x[0]['Due_Time_Min'] for x in available_ops])
-                
-                proc_norm = op['Total_Proc_Min'] / max_proc if max_proc > 0 else 0
-                urgency_norm = (max_due - op['Due_Time_Min']) / max_due if max_due > 0 else 0  # Inverted: higher = more urgent
-                priority_norm = (5 - safe_priority(op)) / 4  # Priority 1=urgent, 5=low → normalized to 1-0
-                
-                # Weighted score (lower is better)
-                score = (0.4 * urgency_norm +  # 40% weight on urgency
-                        0.3 * proc_norm +      # 30% weight on quick jobs
-                        0.3 * priority_norm)   # 30% weight on priority
-                
-                return (safe_priority(op), score)
-            
-            op, earliest_start = min(available_ops, key=weighted_score)
-            
-        elif heuristic == 'SLACK':
-            # 🆕 Minimum Slack Time heuristic
-            # Slack = (Due_Time - Current_Time - Processing_Time)
-            # Prioritizes jobs with least flexibility
-            def slack_time(op_tuple):
-                op = op_tuple[0]
-                earliest = op_tuple[1]
-                
-                slack = op['Due_Time_Min'] - earliest - op['Total_Proc_Min']
-                return (safe_priority(op), slack, op['Total_Proc_Min'])
-            
-            op, earliest_start = min(available_ops, key=slack_time)
         else:
             op, earliest_start = min(
                 available_ops,
@@ -852,7 +720,7 @@ def load_all_data(sample_size=None, _cache_version=2):
 
     decisions = []
     for idx, op in df_ops.iterrows():
-        decision, cost, reason = make_or_buy_decision(op, df_effective, cost_threshold=0.85, hourly_rate=30)
+        decision, cost, reason = make_or_buy_decision(op, df_effective, cost_threshold=0.9)
         decisions.append({'Operation_ID': op['Operation_ID'], 'Decision': decision})
 
     df_decisions = pd.DataFrame(decisions)
@@ -978,67 +846,31 @@ def create_gantt_chart(
             )
         )
 
-    # ✅ Display all maintenance/breakdown windows
     for _, machine in machines_df.iterrows():
         maint = machine.get("Maintenance_Window")
         machine_id = machine.get("Machine_ID")
-        
-        if maint and machine_id in all_machines_sorted:
-            # Handle both single window (dict) and multiple windows (list)
-            windows = [maint] if isinstance(maint, dict) else (maint if isinstance(maint, list) else [])
-            
-            for i, window in enumerate(windows):
-                if isinstance(window, dict) and "start" in window and "end" in window:
-                    # Calculate shifted positions
-                    window_start_shifted = window["start"] - x_min
-                    window_end_shifted = window["end"] - x_min
-                    window_duration = window.get("duration", window["end"] - window["start"])
-                    
-                    # Add semi-transparent red rectangle for breakdown/maintenance
-                    fig.add_shape(
-                        type="rect",
-                        x0=window_start_shifted,
-                        x1=window_end_shifted,
-                        y0=all_machines_sorted.index(machine_id) - 0.45,
-                        y1=all_machines_sorted.index(machine_id) + 0.45,
-                        fillcolor="rgba(255,50,50,0.35)",
-                        line=dict(color="rgba(255,0,0,0.8)", width=2, dash="dot"),
-                        layer="above",
-                    )
-                    
-                    # Add annotation label for breakdown
-                    fig.add_annotation(
-                        x=(window_start_shifted + window_end_shifted) / 2,
-                        y=machine_id,
-                        text=f"⚠️ BREAKDOWN<br>{window_duration} min",
-                        showarrow=False,
-                        font=dict(size=9, color="white", family="Arial Black"),
-                        bgcolor="rgba(200,0,0,0.7)",
-                        bordercolor="red",
-                        borderwidth=1,
-                        borderpad=2,
-                        opacity=0.9
-                    )
+        if maint and "start" in maint and "end" in maint and machine_id in all_machines_sorted:
+            fig.add_shape(
+                type="rect",
+                x0=maint["start"] - x_min,
+                x1=maint["end"] - x_min,
+                y0=all_machines_sorted.index(machine_id) - 0.4,
+                y1=all_machines_sorted.index(machine_id) + 0.4,
+                fillcolor="rgba(255,0,0,0.25)",
+                line_width=0,
+                layer="below",
+            )
 
     pad = max((x_max - x_min) * 0.05, 100)
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color="#E0E0E0")),
+        title=title,
         xaxis_title="Time (minutes, shifted)",
         yaxis_title="Machine",
         height=600,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         margin=dict(l=50, r=20, t=60, b=40),
-        font=dict(size=12, color="#E0E0E0"),
-        xaxis=dict(
-            gridcolor="rgba(128,128,128,0.2)",
-            zerolinecolor="rgba(128,128,128,0.3)",
-            color="#E0E0E0"
-        ),
-        yaxis=dict(
-            gridcolor="rgba(128,128,128,0.2)",
-            color="#E0E0E0"
-        ),
+        font=dict(size=12),
     )
     fig.update_yaxes(
         categoryorder="array",
@@ -1344,16 +1176,6 @@ def compute_all_heuristics_and_metrics(ss, show_progress=True):
     ss.recalculate_all_heuristics = False
     ss.force_metric_refresh = False
 
-    # ✅ LOG ACTIVITY
-    if "activity_log" not in ss:
-        ss.activity_log = []
-    ss.activity_log.append({
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'action': 'All Heuristics Computed',
-        'details': f"Computed: {', '.join(heuristics)} | Dataset: {len(ss.base_df_ops)} ops, {len(ss.base_df_machines)} machines",
-        'affected_items': 'All schedules'
-    })
-
     # ✅ Notify success
     st.success("✅ All heuristics recomputed successfully.")
     st.toast("📊 Updated heuristic metrics ready for review!", icon="📈")
@@ -1440,16 +1262,6 @@ def apply_heuristic_to_dataset(ss, heuristic):
 
     ss.base_df_ops = ops.copy()
     ss.df_ops = ops.copy()
-
-    # ✅ LOG ACTIVITY
-    if "activity_log" not in ss:
-        ss.activity_log = []
-    ss.activity_log.append({
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'action': f'Heuristic Applied: {heuristic}',
-        'details': f"Schedule size: {len(schedule_df)} operations | Updated operation assignments",
-        'affected_items': f"{len(schedule_df)} scheduled operations"
-    })
 
     # ✅ Persist current heuristic choice
     ss.current_heuristic = heuristic
@@ -1548,7 +1360,7 @@ def draw_heuristic_selector(ss):
                     "- **CR**: Critical ratio (balance time & work)\n"
                     "- **PRIORITY**: High priority jobs first")
 
-    heuristic_options = ('SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK')
+    heuristic_options = ('SPT', 'EDD', 'CR', 'PRIORITY')
     
     # 1. Ensure current_heuristic is valid, default to SPT if None
     if ss.current_heuristic not in heuristic_options:
@@ -1652,7 +1464,7 @@ def draw_live_job_scheduler(ss):
 
         col_analyze, col_add = st.columns(2)
         with col_analyze:
-            if st.button("🔍 Analyze Capacity", use_container_width=True, type="primary"):
+            if st.button("🔍 Analyze Capacity", width='stretch', type="primary"):
                 current_time_days = ss.current_schedule['End_Time'].max() / 480 if not ss.current_schedule.empty else 0
                 release_time_min = current_time_days * 480
                 due_time_min = release_time_min + (live_due_days * 480)
@@ -1775,7 +1587,7 @@ def draw_live_job_scheduler(ss):
                 st.write(util_reason)
 
             with col_add:
-                if st.button("➕ Add Job", use_container_width=True, disabled=False):
+                if st.button("➕ Add Job", width='stretch', disabled=False):
                     
                     # --- START FIX: VALIDATION CHECK ---
                     
@@ -1838,7 +1650,7 @@ def draw_live_job_scheduler(ss):
                     st.rerun()
 
 def draw_system_reset(ss):
-    if st.sidebar.button("🔄 Reset System to Original State", use_container_width=True):
+    if st.sidebar.button("🔄 Reset System to Original State", width='stretch'):
         with st.spinner("Resetting system..."):
             st.cache_data.clear()
             st.cache_resource.clear()
@@ -1855,7 +1667,7 @@ def draw_data_export(ss):
         data=csv_data,
         file_name=f"cnc_schedule_{safe_name}_current.csv",
         mime='text/csv',
-        use_container_width=True
+        width='stretch'
     )
 
 def draw_breakdown_simulator(ss):
@@ -1866,23 +1678,16 @@ def draw_breakdown_simulator(ss):
         st.sidebar.write("🧩 Min Start Time:", ss.current_schedule["Start_Time"].min() if not ss.current_schedule.empty else 0)
         st.sidebar.write("🧩 Max End Time:", ss.current_schedule["End_Time"].max() if not ss.current_schedule.empty else 0)
 
-        # Dynamic range based on actual schedule
-        min_slider_val = 0
         max_slider_val = 60000
-        default_val = 100
-        
         if not ss.current_schedule.empty:
-            min_slider_val = int(ss.current_schedule['Start_Time'].min())
             max_slider_val = int(ss.current_schedule['End_Time'].max())
-            default_val = min(int((min_slider_val + max_slider_val) / 2), max_slider_val)
 
-        bd_start = st.slider("Breakdown Start (min):", min_slider_val, max_slider_val, default_val, key='bd_start')
+        bd_start = st.slider("Breakdown Start (min):", 16320, max_slider_val, 60000, key='bd_start')
         bd_duration = st.slider("Breakdown Duration (min):", 30, 1000, 120, key='bd_duration')
 
         if st.button("Simulate Breakdown", key='bd_button'):
             with st.spinner(f"Simulating breakdown for {bd_machine}..."):
                 df_machines_temp = ss.df_machines.copy()
-                df_ops_temp = ss.df_ops.copy()
                 bd_end = bd_start + bd_duration
                 machine_idx = df_machines_temp[df_machines_temp['Machine_ID'] == bd_machine].index
 
@@ -1892,78 +1697,12 @@ def draw_breakdown_simulator(ss):
                     existing_maint = df_machines_temp.at[idx, 'Maintenance_Window']
 
                     if existing_maint:
-                        st.warning(f"{bd_machine} already has maintenance. Adding breakdown window.")
-                        # Merge with existing maintenance (support multiple windows)
-                        if isinstance(existing_maint, dict):
-                            df_machines_temp.at[idx, 'Maintenance_Window'] = [existing_maint, breakdown_window]
-                        elif isinstance(existing_maint, list):
-                            df_machines_temp.at[idx, 'Maintenance_Window'] = existing_maint + [breakdown_window]
-                    else:
-                        df_machines_temp.at[idx, 'Maintenance_Window'] = breakdown_window
+                        st.warning(f"{bd_machine} already has maintenance. Overriding with breakdown.")
+                    df_machines_temp.at[idx, 'Maintenance_Window'] = breakdown_window
 
-                    # ✅ CRITICAL: Identify operations currently scheduled during breakdown
-                    affected_ops = []
-                    if not ss.current_schedule.empty and 'Machine_ID' in ss.current_schedule.columns:
-                        machine_schedule = ss.current_schedule[
-                            ss.current_schedule['Machine_ID'] == bd_machine
-                        ]
-                        
-                        for _, op_row in machine_schedule.iterrows():
-                            op_start = op_row.get('Start_Time', 0)
-                            op_end = op_row.get('End_Time', 0)
-                            
-                            # Check overlap: operation overlaps breakdown if start < bd_end AND end > bd_start
-                            if op_start < bd_end and op_end > bd_start:
-                                affected_ops.append({
-                                    'Operation_ID': op_row.get('Operation_ID'),
-                                    'Job_ID': op_row.get('Job_ID'),
-                                    'Original_Start': op_start,
-                                    'Original_End': op_end
-                                })
-                    
-                    # ✅ Re-evaluate make-or-buy for affected operations
-                    outsourced_count = 0
-                    for affected in affected_ops:
-                        op_id = affected['Operation_ID']
-                        op_data = df_ops_temp[df_ops_temp['Operation_ID'] == op_id]
-                        
-                        if not op_data.empty:
-                            op = op_data.iloc[0]
-                            # Re-run make-or-buy decision with current threshold
-                            decision, cost, reason = make_or_buy_decision(
-                                op, 
-                                ss.base_df_effective, 
-                                cost_threshold=ss.cost_threshold
-                            )
-                            
-                            # Update assignment if outsourcing is better due to breakdown
-                            if decision == 'OUTSOURCE':
-                                df_ops_temp.loc[df_ops_temp['Operation_ID'] == op_id, 'Assignment_Type'] = 'OUTSOURCE'
-                                outsourced_count += 1
-                    
                     # ✅ Persist updated data
                     ss.df_machines = df_machines_temp.copy()
                     ss.base_df_machines = df_machines_temp.copy()
-                    ss.df_ops = df_ops_temp.copy()
-                    ss.base_df_ops = df_ops_temp.copy()
-
-                    # ✅ LOG ACTIVITY
-                    if "activity_log" not in ss:
-                        ss.activity_log = []
-                    
-                    log_details = f"Machine: {bd_machine}, Start: {bd_start} min, Duration: {bd_duration} min, End: {bd_end} min"
-                    if len(affected_ops) > 0:
-                        affected_op_ids = [op['Operation_ID'] for op in affected_ops]
-                        log_details += f" | Affected Operations: {', '.join(affected_op_ids)}"
-                    if outsourced_count > 0:
-                        log_details += f" | Auto-outsourced: {outsourced_count} ops"
-                    
-                    ss.activity_log.append({
-                        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'action': 'Machine Breakdown Added',
-                        'details': log_details,
-                        'affected_items': f"{bd_machine} ({len(affected_ops)} ops affected)"
-                    })
 
                     # ✅ Mark recomputation required
                     ss.recalculate_all_heuristics = True
@@ -1977,41 +1716,9 @@ def draw_breakdown_simulator(ss):
 
                     # ✅ User-facing messages
                     st.success(f"🚨 Breakdown added for {bd_machine} "
-                               f"(Start={bd_start} min, Duration={bd_duration} min, End={bd_end} min)")
-                    
-                    if len(affected_ops) > 0:
-                        st.warning(f"⚠️ {len(affected_ops)} operation(s) were scheduled during breakdown time")
-                        if outsourced_count > 0:
-                            st.info(f"📦 {outsourced_count} operation(s) reassigned to OUTSOURCE due to breakdown conflict")
-                        st.info(f"🔄 Remaining operations will be rescheduled after breakdown window (after {bd_end} min)")
-                        
-                        # 🤖 AI Breakdown Impact Analysis
-                        if AI_ENABLED:
-                            context = {
-                                "Machine": bd_machine,
-                                "Breakdown Start (min)": bd_start,
-                                "Breakdown Duration (min)": bd_duration,
-                                "Affected Operations": len(affected_ops),
-                                "Auto-Outsourced": outsourced_count,
-                                "Affected Operation IDs": [op['Operation_ID'] for op in affected_ops][:5]  # First 5
-                            }
-                            
-                            prompt = f"""
-A machine breakdown has occurred on {bd_machine}.
-
-Analyze:
-1. Immediate impact on production schedule and delivery commitments
-2. Cost implications (outsourcing vs delays)
-3. Risk mitigation strategies for affected operations
-4. Recommendations for preventing similar disruptions
-"""
-                            
-                            with st.expander("🤖 AI Breakdown Impact Analysis", expanded=False):
-                                with st.spinner("🤖 Analyzing breakdown impact..."):
-                                    insights = get_ai_insights(prompt, context)
-                                    st.markdown(insights)
-                    
-                    st.info("💡 Click **'🧪 Compute All Heuristics'** to recompute schedules with breakdown enforced.")
+                               f"(Start={bd_start}, Duration={bd_duration} min).")
+                    st.info("💡 Please click **'🧪 Compute All Heuristics'** in the sidebar "
+                            "to recompute schedules and view updated recommendations.")
 
                     # ✅ Toast notification for subtle visual feedback
                     st.toast("⚙ Machine breakdown applied — ready for heuristic recomputation.", icon="⚙️")
@@ -2031,26 +1738,13 @@ def draw_priority_manager(ss):
     with st.sidebar.expander("⚡ Job Priority Manager"):
         job_list = ss.df_ops['Job_ID'].unique()
         priority_job = st.selectbox("Job ID:", job_list, key='priority_job')
-        new_priority = st.radio("New Priority (1=Highest, 4=Lowest):", [1, 2, 3, 4], index=1, horizontal=True, key='priority_val')
+        new_priority = st.radio("New Priority:", [1, 2, 3], index=1, horizontal=True, key='priority_val')
 
         if st.button("Update Priority", key='priority_button'):
             with st.spinner(f"Updating {priority_job} to P{new_priority}..."):
-                # Get old priority for logging
-                old_priority = ss.df_ops[ss.df_ops['Job_ID'] == priority_job]['Priority'].iloc[0] if not ss.df_ops[ss.df_ops['Job_ID'] == priority_job].empty else None
-                
                 # ✅ Update dataset priority
                 ss.df_ops.loc[ss.df_ops['Job_ID'] == priority_job, 'Priority'] = new_priority
                 ss.base_df_ops.loc[ss.base_df_ops['Job_ID'] == priority_job, 'Priority'] = new_priority
-
-                # ✅ LOG ACTIVITY
-                if "activity_log" not in ss:
-                    ss.activity_log = []
-                ss.activity_log.append({
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'action': 'Priority Updated',
-                    'details': f"Job: {priority_job}, Changed from P{old_priority} to P{new_priority}",
-                    'affected_items': priority_job
-                })
 
                 # ✅ Mark recomputation required
                 ss.triggered_by_priority_manager = True
@@ -2114,16 +1808,6 @@ def draw_outsourcing_policy(ss):
                     f"({before_pct:.1f}% → {after_pct:.1f}%)."
                 )
 
-                # ✅ LOG ACTIVITY
-                if "activity_log" not in ss:
-                    ss.activity_log = []
-                ss.activity_log.append({
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'action': 'Outsourcing Policy Updated',
-                    'details': f"Threshold changed to {new_threshold:.2f} | Outsourced: {before_outsourced} → {after_outsourced} ({after_pct:.1f}%) | {direction.title()} by {abs(change)} ops",
-                    'affected_items': f"{abs(change)} operations"
-                })
-
                 # ✅ Persistent reminder + navigation
                 ss.triggered_by_outsourcing_policy = True
                 ss.recalculate_all_heuristics = True
@@ -2186,16 +1870,6 @@ def draw_job_deleter(ss):
                 # 8. CRITICAL: Remove from the effective times dataframe
                 ss.base_df_effective = ss.base_df_effective[~ss.base_df_effective['Operation_ID'].isin(ops_to_delete)].copy()
 
-                # ✅ LOG ACTIVITY
-                if "activity_log" not in ss:
-                    ss.activity_log = []
-                ss.activity_log.append({
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'action': 'Job Deleted',
-                    'details': f"Deleted Job: {job_to_delete} | Operations removed: {len(ops_to_delete)} ({', '.join(ops_to_delete)})",
-                    'affected_items': f"{job_to_delete} ({len(ops_to_delete)} ops)"
-                })
-
                 st.success(f"✅ Deleted {job_to_delete} ({len(ops_to_delete)} operations removed).")
 
                 # 9. Immediately recompute the *current* schedule
@@ -2252,63 +1926,6 @@ def draw_kpi_dashboard(ss):
     col1.metric("Makespan (Days)", metrics['Makespan_Days'])
     col2.metric("Total Tardiness (Days)", metrics['Total_Tardiness_Days'])
     col3.metric("On-Time %", metrics['On_Time_%'])
-    
-    # 🤖 AI Insights Button
-    if AI_ENABLED and st.button("🤖 Get AI Insights on Performance", key="ai_kpi_insights"):
-        with st.spinner("🤖 AI analyzing performance metrics..."):
-            context = {
-                "Heuristic": ss.current_heuristic,
-                "Makespan (Days)": metrics['Makespan_Days'],
-                "Total Tardiness (Days)": metrics['Total_Tardiness_Days'],
-                "On-Time Delivery %": metrics['On_Time_%'],
-                "Machine Utilization %": metrics['Machine_Utilization_%'],
-                "Total Cost ($)": metrics['Total_Cost_$'],
-                "Late Operations": metrics.get('Late_Operations', 0),
-                "Total Operations": metrics.get('Total_Operations', 0)
-            }
-            
-            prompt = f"""
-Analyze the performance of the {ss.current_heuristic} heuristic on this CNC scheduling job.
-
-**CURRENT PERFORMANCE:**
-- Makespan: {metrics['Makespan_Days']} days
-- Total Tardiness: {metrics['Total_Tardiness_Days']} days
-- On-Time Delivery: {metrics['On_Time_%']}%
-- Machine Utilization: {metrics['Machine_Utilization_%']}%
-- Total Cost: ${metrics['Total_Cost_$']:,.2f}
-- Late Operations: {metrics.get('Late_Operations', 0)} out of {metrics.get('Total_Operations', 0)}
-
-**ANALYSIS REQUIRED:**
-
-1. **Performance Assessment** (2-3 sentences)
-   - Is this performance good, average, or poor for {ss.current_heuristic}?
-   - Identify the #1 strength and #1 weakness
-
-2. **Critical Issues** (if any exist)
-   - If tardiness > 10% of makespan: Flag as HIGH PRIORITY issue
-   - If utilization < 30%: Flag as capacity/demand mismatch
-   - If cost appears excessive: Identify cost drivers
-
-3. **Heuristic Comparison** (specific recommendation)
-   - Compare expected behavior of all 4 heuristics (SPT, EDD, CR, PRIORITY)
-   - Recommend which heuristic to try next and why
-   - Predict expected improvement (e.g., "EDD should reduce tardiness by ~30%")
-
-4. **Immediate Actions** (top 2-3 only)
-   - Specific changes to make in this tool
-   - Expected impact quantified
-   - Implementation difficulty: Easy/Medium/Complex
-
-**FORMAT:**
-- Be direct and specific
-- Use actual metric values in your analysis
-- Prioritize actions by impact
-- Keep under 350 words
-"""
-            
-            insights = get_ai_insights(prompt, context)
-            st.info("🤖 **AI-Powered Performance Analysis:**")
-            st.markdown(insights)
 
 
 def draw_gantt_tab(ss):
@@ -2324,85 +1941,6 @@ def draw_gantt_tab(ss):
             machines_order=ss.machine_order
         )
         st.plotly_chart(gantt_fig, use_container_width=True)
-        
-        # 🤖 AI Gantt Chart Insights
-        if AI_ENABLED and not ss.current_schedule.empty:
-            if st.button("🤖 Get AI Insights on Schedule Visualization", key="ai_gantt_insights"):
-                with st.spinner("🤖 AI analyzing schedule timeline..."):
-                    machine_utilization = {}
-                    makespan = ss.current_schedule['End_Time'].max()
-                    
-                    for machine in ss.df_machines['Machine_ID'].unique():
-                        machine_ops = ss.current_schedule[ss.current_schedule['Machine_ID'] == machine]
-                        if not machine_ops.empty:
-                            productive_time = (machine_ops['Setup_Time'].sum() + 
-                                             machine_ops['Proc_Time'].sum() + 
-                                             machine_ops['Transfer_Time'].sum())
-                            util = (productive_time / makespan * 100) if makespan > 0 else 0
-                            machine_utilization[machine] = round(util, 1)
-                    
-                    # Check for breakdowns in schedule
-                    breakdown_count = 0
-                    for _, machine in ss.df_machines.iterrows():
-                        maint = machine.get('Maintenance_Window')
-                        if maint:
-                            if isinstance(maint, list):
-                                breakdown_count += len(maint)
-                            elif isinstance(maint, dict):
-                                breakdown_count += 1
-                    
-                    context = {
-                        "Heuristic": ss.current_heuristic,
-                        "Makespan (min)": makespan,
-                        "Total Operations Scheduled": len(ss.current_schedule),
-                        "Machine Utilization": machine_utilization,
-                        "Active Breakdowns": breakdown_count,
-                        "Machines": len(ss.df_machines)
-                    }
-                    
-                    prompt = f"""
-Analyze this Gantt chart visualization of the CNC scheduling timeline using the {ss.current_heuristic} heuristic.
-
-**CRITICAL CONTEXT:**
-- This is a scheduling simulation with {len(ss.df_machines)} machines and {len(ss.current_schedule)} scheduled operations
-- The user has access to 4 different heuristics: SPT, EDD, CR, PRIORITY
-- Makespan of {makespan:.0f} minutes ({makespan/60:.1f} hours)
-- Machine utilization ranges from {min(machine_utilization.values()):.1f}% to {max(machine_utilization.values()):.1f}%
-
-**YOUR TASK:**
-Provide a concise, actionable analysis focusing on:
-
-1. **Load Balancing Assessment**
-   - Identify specific machines that are overloaded (>80% util) or severely underutilized (<20% util)
-   - Explain WHY this imbalance exists (e.g., job routing, operation type constraints, breakdown impact)
-   - Rate severity: Critical, Moderate, or Acceptable
-
-2. **Scheduling Pattern Analysis**
-   - Identify visible idle time gaps or bottleneck patterns
-   - Explain how the {ss.current_heuristic} heuristic contributed to these patterns
-   - Compare expected behavior of this heuristic vs observed results
-
-3. **Breakdown/Maintenance Impact** ({breakdown_count} active windows)
-   - Quantify actual impact on capacity and makespan
-   - Identify if breakdowns forced outsourcing or major delays
-   - Recommend proactive vs reactive strategies
-
-4. **Actionable Recommendations** (SPECIFIC TO THIS SYSTEM)
-   - If utilization is poor, suggest trying a different heuristic (name which one and why)
-   - If breakdowns are problematic, suggest adjusting breakdown windows or outsourcing threshold
-   - If load imbalance exists, suggest job routing changes or machine capability expansions
-   - Focus on changes the user can make RIGHT NOW in this tool
-
-**FORMAT:**
-- Be specific with machine IDs and metrics
-- Avoid generic consulting advice
-- Prioritize top 2-3 most impactful actions
-- Keep response under 400 words
-"""
-                    
-                    insights = get_ai_insights(prompt, context)
-                    st.info("🤖 **AI Schedule Timeline Analysis:**")
-                    st.markdown(insights)
 
 def draw_operation_status_tab(ss):
     st.header(f"📋 Operation Status ({ss.current_heuristic or 'N/A'})")
@@ -2411,39 +1949,7 @@ def draw_operation_status_tab(ss):
         status_table = create_operation_status_table(ss.current_schedule.copy() if not ss.current_schedule is None else pd.DataFrame(), ss.df_ops.copy(), _cache_key=_cache_key)
 
         st.info(f"🔄 Cache Key: {getattr(ss, 'schedule_update_key', 'N/A')}")
-        st.dataframe(status_table, use_container_width=True, height=500)
-        
-        # 🤖 AI Operation Status Insights
-        if AI_ENABLED and not status_table.empty and 'Status' in status_table.columns:
-            if st.button("🤖 Get AI Insights on Operation Status", key="ai_operation_insights"):
-                with st.spinner("🤖 AI analyzing operation status..."):
-                    late_ops = len(status_table[status_table['Status'] == '⏰ Late']) if 'Status' in status_table.columns else 0
-                    pending_ops = len(status_table[status_table['Status'] == '⏳ Pending']) if 'Status' in status_table.columns else 0
-                    completed_ops = len(status_table[status_table['Status'] == '✅ Completed']) if 'Status' in status_table.columns else 0
-                    outsourced_ops = len(status_table[status_table['Assignment'] == 'OUTSOURCE']) if 'Assignment' in status_table.columns else 0
-                    
-                    context = {
-                        "Total Operations": len(status_table),
-                        "Late Operations": late_ops,
-                        "Pending Operations": pending_ops,
-                        "Completed Operations": completed_ops,
-                        "Outsourced Operations": outsourced_ops,
-                        "Current Heuristic": ss.current_heuristic or 'None'
-                    }
-                    
-                    prompt = f"""
-Analyze the current operation status distribution in the CNC scheduling system.
-
-Provide:
-1. Assessment of schedule health based on late/pending/completed ratios
-2. Potential bottlenecks or scheduling inefficiencies
-3. Recommendations for operations that might benefit from priority adjustments
-4. Suggestions for optimizing the mix of in-house vs outsourced work
-"""
-                    
-                    insights = get_ai_insights(prompt, context)
-                    st.info("🤖 **AI Operation Status Analysis:**")
-                    st.markdown(insights)
+        st.dataframe(status_table, width='stretch', height=500)
 
 def draw_comparison_tab(ss):
     st.header("⚖ Heuristic Comparison")
@@ -2457,649 +1963,6 @@ def draw_comparison_tab(ss):
             st.write(f"df_metrics shape: {ss.df_metrics.shape}")
 
     st.info("**EXPLAINER**: This tab compares all 4 scheduling algorithms on the CURRENT dataset.")
-
-    # 🤖 AI DATASET INSIGHTS SECTION
-    if AI_ENABLED:
-        with st.expander("🤖 AI-Generated Dataset Insights", expanded=False):
-            st.caption("📊 **Comprehensive Dataset Analysis**")
-            
-            if st.button("🚀 Generate Dataset Insights", key="ai_dataset_insights", type="primary", use_container_width=True):
-                with st.spinner("🤖 AI analyzing entire dataset and scheduling environment..."):
-                    # Gather comprehensive dataset statistics
-                    total_jobs = ss.base_df_ops['Job_ID'].nunique() if hasattr(ss, 'base_df_ops') else 0
-                    total_operations = len(ss.base_df_ops) if hasattr(ss, 'base_df_ops') else 0
-                    total_machines = len(ss.base_df_machines) if hasattr(ss, 'base_df_machines') else 0
-                    
-                    # Operation type distribution
-                    op_type_dist = ss.base_df_ops['Op_Type'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Op_Type' in ss.base_df_ops.columns else {}
-                    
-                    # Assignment type distribution
-                    assignment_dist = ss.base_df_ops['Assignment_Type'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Assignment_Type' in ss.base_df_ops.columns else {}
-                    
-                    # Priority distribution
-                    priority_dist = ss.base_df_ops['Priority'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Priority' in ss.base_df_ops.columns else {}
-                    
-                    # Material type distribution
-                    material_dist = ss.base_df_ops['Mat_Type'].value_counts().to_dict() if hasattr(ss, 'base_df_ops') and 'Mat_Type' in ss.base_df_ops.columns else {}
-                    
-                    # Time-based metrics
-                    avg_proc_time = ss.base_df_ops['Total_Proc_Min'].mean() if hasattr(ss, 'base_df_ops') and 'Total_Proc_Min' in ss.base_df_ops.columns else 0
-                    avg_setup_time = ss.base_df_ops['Setup_Time'].mean() if hasattr(ss, 'base_df_ops') and 'Setup_Time' in ss.base_df_ops.columns else 0
-                    
-                    # Deadline analysis
-                    avg_release_day = ss.base_df_ops['Release_Day'].mean() if hasattr(ss, 'base_df_ops') and 'Release_Day' in ss.base_df_ops.columns else 0
-                    avg_due_day = ss.base_df_ops['Due_Day'].mean() if hasattr(ss, 'base_df_ops') and 'Due_Day' in ss.base_df_ops.columns else 0
-                    avg_lead_time = avg_due_day - avg_release_day
-                    
-                    # Machine availability
-                    machines_with_maintenance = 0
-                    if hasattr(ss, 'base_df_machines'):
-                        for _, machine in ss.base_df_machines.iterrows():
-                            if machine.get('Maintenance_Window'):
-                                machines_with_maintenance += 1
-                    
-                    # Cost analysis
-                    avg_outsource_cost = 0
-                    if hasattr(ss, 'base_df_ops') and 'Outsource_Cost' in ss.base_df_ops.columns:
-                        outsourced = ss.base_df_ops[ss.base_df_ops['Assignment_Type'] == 'OUTSOURCE']
-                        if not outsourced.empty:
-                            avg_outsource_cost = outsourced['Outsource_Cost'].mean()
-                    
-                    context = {
-                        "Total Jobs": total_jobs,
-                        "Total Operations": total_operations,
-                        "Total Machines": total_machines,
-                        "Operation Types": op_type_dist,
-                        "Assignment Distribution": assignment_dist,
-                        "Priority Distribution": priority_dist,
-                        "Material Types": material_dist,
-                        "Average Processing Time (min)": round(avg_proc_time, 2),
-                        "Average Setup Time (min)": round(avg_setup_time, 2),
-                        "Average Lead Time (days)": round(avg_lead_time, 2),
-                        "Machines with Maintenance/Breakdown": machines_with_maintenance,
-                        "Average Outsourcing Cost ($)": round(avg_outsource_cost, 2),
-                        "Current Outsourcing Threshold": ss.cost_threshold if hasattr(ss, 'cost_threshold') else 'N/A'
-                    }
-                    
-                    prompt = f"""
-Analyze this CNC manufacturing dataset to help optimize scheduling decisions.
-
-**DATASET OVERVIEW:**
-- {total_jobs} jobs with {total_operations} total operations
-- {total_machines} machines available
-- Average lead time: {avg_lead_time:.1f} days
-- Current outsourcing rate: {(assignment_dist.get('OUTSOURCE', 0) / total_operations * 100) if total_operations > 0 else 0:.1f}%
-- Machines with breakdowns/maintenance: {machines_with_maintenance}
-
-**ANALYSIS OBJECTIVES:**
-
-1. **Workload Complexity Assessment**
-   - Evaluate job mix diversity and scheduling difficulty
-   - Identify operations that may cause bottlenecks (high setup times, rare materials)
-   - Rate overall dataset complexity: Low/Medium/High
-
-2. **Capacity vs Demand Balance**
-   - Compare machine count ({total_machines}) to operation volume ({total_operations})
-   - Assess if capacity appears adequate, tight, or excessive
-   - Identify specific operation types that may strain resources
-
-3. **Time Constraint Pressure**
-   - Analyze lead time ({avg_lead_time:.1f} days) vs avg processing time ({avg_proc_time:.1f} min)
-   - Assess urgency pressure from priority distribution
-   - Predict likelihood of tardiness issues
-
-4. **Outsourcing Strategy Evaluation**
-   - Current outsourcing: {(assignment_dist.get('OUTSOURCE', 0) / total_operations * 100) if total_operations > 0 else 0:.1f}% at avg cost ${avg_outsource_cost:.2f}
-   - Current threshold: {ss.cost_threshold if hasattr(ss, 'cost_threshold') else 'N/A'}
-   - Recommend if threshold should be adjusted (raise to reduce outsourcing, lower to increase flexibility)
-
-5. **Heuristic Recommendation**
-   - Based on the dataset characteristics, suggest which heuristic (SPT, EDD, CR, PRIORITY) is likely to perform best
-   - Explain reasoning based on operation types, priorities, and time constraints
-
-6. **Top 3 Actionable Recommendations**
-   - Specific changes to make in THIS tool (adjust threshold, try different heuristic, add/remove breakdowns)
-   - Expected impact of each recommendation
-   - Priority order (what to try first)
-
-**FORMAT REQUIREMENTS:**
-- Use bullet points and clear section headers
-- Reference actual numbers from the dataset
-- Keep total response under 600 words
-- Be specific and actionable, not generic
-"""
-                    
-                    insights = get_ai_insights(prompt, context)
-                    
-                    # Display insights in a structured format
-                    st.markdown("---")
-                    st.markdown("### 📊 **AI Dataset Analysis Report**")
-                    st.markdown(insights)
-                    st.markdown("---")
-                    
-                    # Show key statistics
-                    st.markdown("#### 📈 **Key Dataset Statistics**")
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Total Jobs", total_jobs)
-                        st.metric("Total Operations", total_operations)
-                    with col2:
-                        st.metric("Total Machines", total_machines)
-                        st.metric("Machines w/ Maintenance", machines_with_maintenance)
-                    with col3:
-                        st.metric("Avg Processing (min)", f"{avg_proc_time:.1f}")
-                        st.metric("Avg Setup (min)", f"{avg_setup_time:.1f}")
-                    with col4:
-                        st.metric("Avg Lead Time (days)", f"{avg_lead_time:.1f}")
-                        outsource_pct = (assignment_dist.get('OUTSOURCE', 0) / total_operations * 100) if total_operations > 0 else 0
-                        st.metric("Outsourced %", f"{outsource_pct:.1f}%")
-                    
-                    # Distribution charts
-                    if op_type_dist:
-                        st.markdown("#### 📊 **Operation Type Distribution**")
-                        st.bar_chart(pd.Series(op_type_dist))
-                    
-                    if priority_dist:
-                        st.markdown("#### ⚡ **Priority Distribution**")
-                        st.bar_chart(pd.Series(priority_dist))
-
-    # 📊 HOURLY RATE vs TARDINESS TRADE-OFF ANALYSIS
-    st.markdown("---")
-    with st.expander("💰 Hourly Rate Impact Analysis", expanded=False):
-        st.markdown("### 📊 How Hourly Rate Affects Cost & Outsourcing")
-        
-        # Safety check - ensure data is loaded
-        if not hasattr(ss, 'base_df_ops') or ss.base_df_ops is None or ss.base_df_ops.empty:
-            st.warning("⚠️ No data loaded. Please compute heuristics first using the '🧪 Compute All Heuristics' button in the sidebar.")
-            return
-        
-        if not hasattr(ss, 'base_df_effective') or ss.base_df_effective is None or ss.base_df_effective.empty:
-            st.warning("⚠️ Machine effectiveness data not loaded. Please restart the app.")
-            return
-        
-        st.info("""
-        💡 **What Changes with Hourly Rate:**
-        - 💰 **In-House Labor Cost** - Direct relationship
-        - 📦 **Outsourcing Decisions** - Higher in-house cost makes vendors more attractive
-        - 💵 **Total Project Cost** - Combination of in-house + outsource costs
-        
-        **What DOESN'T Change:**
-        - Tardiness, utilization, makespan (these depend on scheduling, not cost)
-        """)
-        
-        # Add heuristic selector
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            analysis_heuristic = st.selectbox(
-                "Select Scheduling Algorithm for Analysis:",
-                ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK'],
-                index=0,
-                key='trade_off_heuristic',
-                help="Choose which scheduling algorithm to use for the trade-off analysis"
-            )
-        with col2:
-            st.metric("Selected", analysis_heuristic, "Algorithm")
-        
-        # Simulate different hourly rates
-        hourly_rates = [20, 25, 30, 35, 40, 45, 50, 60, 70, 80]
-        simulation_results = []
-        
-        with st.spinner(f"Analyzing hourly rate impact using {analysis_heuristic}..."):
-            for rate in hourly_rates:
-                # Recalculate make-or-buy decisions with different rates
-                temp_decisions = []
-                for idx, op in ss.base_df_ops.iterrows():
-                    decision, cost, reason = make_or_buy_decision(
-                        op, ss.base_df_effective, 
-                        cost_threshold=0.85, 
-                        hourly_rate=rate
-                    )
-                    temp_decisions.append({
-                        'Operation_ID': op['Operation_ID'], 
-                        'Decision': decision,
-                        'Cost': cost,
-                        'Reason': reason
-                    })
-                
-                temp_df_decisions = pd.DataFrame(temp_decisions)
-                temp_ops = ss.base_df_ops.copy()
-                temp_ops = temp_ops.merge(temp_df_decisions, on='Operation_ID', how='left')
-                temp_ops['Assignment_Type'] = temp_ops['Decision'].fillna('IN_HOUSE')
-                temp_ops.drop(columns=['Decision'], inplace=True)
-                
-                # Run schedule with selected heuristic (only for IN_HOUSE operations)
-                inhouse_ops = temp_ops[temp_ops['Assignment_Type'] == 'IN_HOUSE'].copy()
-                scheduler = CNCScheduler(
-                    inhouse_ops,
-                    ss.base_df_machines,
-                    ss.base_df_effective,
-                    ss.base_df_penalties
-                )
-                schedule = scheduler.run_scheduling(heuristic=analysis_heuristic, verbose=False)
-                
-                # Calculate costs
-                outsourced_count = len(temp_ops[temp_ops['Assignment_Type'] == 'OUTSOURCE'])
-                inhouse_count = len(temp_ops[temp_ops['Assignment_Type'] == 'IN_HOUSE'])
-                total_ops = len(temp_ops)
-                outsource_pct = (outsourced_count / total_ops) * 100
-                
-                # Calculate in-house cost with current rate
-                inhouse_cost = schedule['Proc_Time'].sum() / 60 * rate if not schedule.empty else 0
-                
-                # Calculate outsource cost from the operations marked for outsourcing
-                # Outsource_Cost should already be in base_df_ops from data loading
-                outsourced_ops = temp_ops[temp_ops['Assignment_Type'] == 'OUTSOURCE']
-                
-                # Debug: Check if Outsource_Cost column exists and has values
-                if 'Outsource_Cost' in outsourced_ops.columns and not outsourced_ops.empty:
-                    outsource_cost = outsourced_ops['Outsource_Cost'].sum()
-                    # If still 0, it means the column has all zeros - check base data
-                    if outsource_cost == 0 and len(outsourced_ops) > 0:
-                        # These operations have Outsource_Cost = 0 in the base data
-                        # This happens when operations don't have a Vendor_Ref
-                        pass
-                else:
-                    outsource_cost = 0
-                
-                total_cost = inhouse_cost + outsource_cost
-                
-                simulation_results.append({
-                    'Hourly_Rate': rate,
-                    'In-House_Cost_$': inhouse_cost,
-                    'Outsource_Cost_$': outsource_cost,
-                    'Total_Cost_$': total_cost,
-                    'Outsourcing_%': outsource_pct,
-                    'In-House_Ops': inhouse_count,
-                    'Outsourced_Ops': outsourced_count
-                })
-        
-        sim_df = pd.DataFrame(simulation_results)
-        
-        # Show algorithm info
-        st.caption(f"📊 Analysis performed using **{analysis_heuristic}** scheduling algorithm across {len(hourly_rates)} hourly rate scenarios")
-        
-        # Create focused charts
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-        
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=(
-                '💰 Cost Breakdown by Hourly Rate',
-                '📦 Outsourcing % vs Hourly Rate'
-            ),
-            specs=[
-                [{'secondary_y': False}, {'secondary_y': True}]
-            ]
-        )
-        
-        # Chart 1: Stacked cost breakdown
-        fig.add_trace(
-            go.Bar(x=sim_df['Hourly_Rate'], y=sim_df['In-House_Cost_$'],
-                   name='In-House Labor Cost',
-                   marker=dict(color='#2E86AB'),
-                   hovertemplate='Rate: $%{x}/hr<br>In-House: $%{y:,.0f}<extra></extra>'),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Bar(x=sim_df['Hourly_Rate'], y=sim_df['Outsource_Cost_$'],
-                   name='Outsource Cost',
-                   marker=dict(color='#A23B72'),
-                   hovertemplate='Rate: $%{x}/hr<br>Outsource: $%{y:,.0f}<extra></extra>'),
-            row=1, col=1
-        )
-        
-        # Chart 2: Outsourcing % with operation count
-        fig.add_trace(
-            go.Scatter(x=sim_df['Hourly_Rate'], y=sim_df['Outsourcing_%'],
-                      mode='lines+markers', name='Outsourcing %',
-                      line=dict(color='#F18F01', width=4),
-                      marker=dict(size=12, symbol='diamond'),
-                      hovertemplate='Rate: $%{x}/hr<br>Outsourced: %{y:.1f}%<extra></extra>'),
-            row=1, col=2, secondary_y=False
-        )
-        fig.add_trace(
-            go.Scatter(x=sim_df['Hourly_Rate'], y=sim_df['Outsourced_Ops'],
-                      mode='lines+markers', name='# Outsourced Ops',
-                      line=dict(color='#C73E1D', width=2, dash='dash'),
-                      marker=dict(size=8),
-                      hovertemplate='Rate: $%{x}/hr<br>Operations: %{y}<extra></extra>'),
-            row=1, col=2, secondary_y=True
-        )
-        
-        # Update axes
-        fig.update_xaxes(title_text="Hourly Rate ($/hr)", row=1, col=1)
-        fig.update_yaxes(title_text="Cost ($)", row=1, col=1)
-        
-        fig.update_xaxes(title_text="Hourly Rate ($/hr)", row=1, col=2)
-        fig.update_yaxes(title_text="Outsourcing %", row=1, col=2, secondary_y=False)
-        fig.update_yaxes(title_text="Number of Operations", row=1, col=2, secondary_y=True)
-        
-        fig.update_layout(
-            height=500, 
-            showlegend=True, 
-            barmode='stack',
-            title_text=f"Hourly Rate Impact Analysis ({analysis_heuristic} Algorithm)",
-            hovermode='x unified'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Key insights - Cost focused
-        st.markdown("#### 🎯 Key Insights:")
-        
-        lowest_cost_idx = sim_df['Total_Cost_$'].idxmin()
-        highest_outsource_idx = sim_df['Outsourcing_%'].idxmax()
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric(
-                "Lowest Total Cost",
-                f"${sim_df.loc[lowest_cost_idx, 'Hourly_Rate']}/hr",
-                f"${sim_df.loc[lowest_cost_idx, 'Total_Cost_$']:,.0f}"
-            )
-        with col2:
-            current_idx = sim_df[sim_df['Hourly_Rate'] == 30].index[0]
-            st.metric(
-                "Current Rate ($30/hr)",
-                f"{sim_df.loc[current_idx, 'Outsourcing_%']:.1f}% outsourced",
-                f"${sim_df.loc[current_idx, 'Total_Cost_$']:,.0f}"
-            )
-        with col3:
-            st.metric(
-                "Maximum Outsourcing",
-                f"${sim_df.loc[highest_outsource_idx, 'Hourly_Rate']}/hr",
-                f"{sim_df.loc[highest_outsource_idx, 'Outsourcing_%']:.1f}%"
-            )
-        
-        # 🤖 AI-Powered Outsourcing Analysis
-        st.markdown("#### 🤖 AI Outsourcing Analysis")
-        
-        # Analyze outsourcing trends
-        outsource_range = sim_df['Outsourcing_%'].max() - sim_df['Outsourcing_%'].min()
-        cost_range = sim_df['Total_Cost_$'].max() - sim_df['Total_Cost_$'].min()
-        
-        # Prepare context for AI
-        analysis_context = {
-            'heuristic': analysis_heuristic,
-            'current_rate': 30,
-            'current_outsourcing': sim_df[sim_df['Hourly_Rate'] == 30]['Outsourcing_%'].values[0],
-            'current_cost': sim_df[sim_df['Hourly_Rate'] == 30]['Total_Cost_$'].values[0],
-            'min_outsourcing': sim_df['Outsourcing_%'].min(),
-            'max_outsourcing': sim_df['Outsourcing_%'].max(),
-            'outsource_range': outsource_range,
-            'cost_range': cost_range,
-            'cost_threshold': 0.85,
-            'total_operations': len(ss.base_df_ops),
-            'rate_range': f"${min(hourly_rates)} - ${max(hourly_rates)}"
-        }
-        
-        if AI_ENABLED:
-            with st.spinner("🤖 Generating AI insights on outsourcing strategy..."):
-                ai_prompt = f"""
-                Analyze this CNC manufacturing outsourcing data and provide actionable insights:
-                
-                **Analysis Configuration:**
-                - Scheduling Algorithm: {analysis_context['heuristic']}
-                
-                **Current Situation:**
-                - Current hourly rate: ${analysis_context['current_rate']}/hr
-                - Current outsourcing: {analysis_context['current_outsourcing']:.1f}% ({int(analysis_context['current_outsourcing'] * analysis_context['total_operations'] / 100)} of {analysis_context['total_operations']} operations)
-                - Current total cost: ${analysis_context['current_cost']:,.0f}
-                
-                **Analysis Results:**
-                - Tested hourly rates: {analysis_context['rate_range']}
-                - Outsourcing range: {analysis_context['min_outsourcing']:.1f}% - {analysis_context['max_outsourcing']:.1f}% (variation: {analysis_context['outsource_range']:.1f}%)
-                - Cost range: ${sim_df['Total_Cost_$'].min():,.0f} - ${sim_df['Total_Cost_$'].max():,.0f}
-                - Cost threshold: {analysis_context['cost_threshold']} (outsource if vendor < 85% of in-house)
-                
-                **Key Questions:**
-                1. Is the outsourcing % changing significantly with hourly rate? (>10% variation is good)
-                2. If outsourcing is NOT changing (<5% variation), what's the likely reason?
-                3. What's the optimal hourly rate considering cost and outsourcing balance?
-                4. Should we adjust the cost threshold (currently 0.7)?
-                5. Are vendor prices competitive or should we negotiate?
-                
-                Provide:
-                - 🔍 Diagnosis (2-3 sentences)
-                - 💡 Key Finding (1 sentence)
-                - 🎯 Recommendation (specific action with numbers)
-                - ⚠️ Warning (if applicable)
-                """
-                
-                ai_insights = get_ai_insights(ai_prompt, analysis_context)
-                st.markdown(ai_insights)
-        else:
-            st.info("💡 AI analysis unavailable. Enable Gemini API for intelligent insights.")
-        
-        # 🔍 DETAILED DIAGNOSTIC - Why high outsourcing at low rates?
-        st.markdown("#### 🔍 Detailed Cost Breakdown Diagnostic")
-        
-        if sim_df['Outsourcing_%'].min() > 50:
-            st.warning(f"""
-            ⚠️ **HIGH OUTSOURCING DETECTED**: Even at lowest rate (${min(hourly_rates)}/hr), 
-            outsourcing is {sim_df['Outsourcing_%'].min():.1f}%. This means vendors are 
-            significantly cheaper than in-house operations.
-            """)
-        
-        # Sample 5 operations to show cost comparison
-        st.markdown("##### 📋 Sample Operations Cost Analysis")
-        st.caption("Showing detailed cost breakdown for first 10 operations (mix of vendor-available and in-house-only ops)")
-        
-        sample_ops = ss.base_df_ops.head(10).copy()  # Show 10 to get mix of vendor/no-vendor ops
-        diagnostic_data = []
-        
-        for idx, op in sample_ops.iterrows():
-            # Calculate in-house cost at $20/hr
-            inhouse_cost_20, machine = calculate_inhouse_cost(op, ss.base_df_effective, hourly_rate=20)
-            # Calculate in-house cost at $50/hr
-            inhouse_cost_50, _ = calculate_inhouse_cost(op, ss.base_df_effective, hourly_rate=50)
-            # Get vendor cost
-            vendor_cost = op.get('Outsource_Cost', 0)
-            has_vendor = vendor_cost > 0
-            
-            # Make decision at $20/hr
-            decision_20, _, reason_20 = make_or_buy_decision(op, ss.base_df_effective, cost_threshold=0.85, hourly_rate=20)
-            # Make decision at $50/hr
-            decision_50, _, reason_50 = make_or_buy_decision(op, ss.base_df_effective, cost_threshold=0.85, hourly_rate=50)
-            
-            # Calculate vendor advantage (only if vendor exists)
-            if has_vendor and inhouse_cost_20 > 0:
-                advantage = f"{((inhouse_cost_20 - vendor_cost) / inhouse_cost_20 * 100):.1f}%"
-            elif not has_vendor:
-                advantage = "No Vendor"
-            else:
-                advantage = "N/A"
-            
-            diagnostic_data.append({
-                'Operation': op['Operation_ID'],
-                'Quantity': op['Quantity'],
-                'Op_Type': op['Op_Type'],
-                'Vendor?': '✅' if has_vendor else '❌',
-                'In-House @ $20/hr': f"${inhouse_cost_20:.2f}",
-                'In-House @ $50/hr': f"${inhouse_cost_50:.2f}",
-                'Vendor Cost': f"${vendor_cost:.2f}" if has_vendor else "N/A",
-                'Decision @ $20/hr': decision_20,
-                'Decision @ $50/hr': decision_50,
-                'Vendor Advantage': advantage
-            })
-        
-        diagnostic_df = pd.DataFrame(diagnostic_data)
-        st.dataframe(diagnostic_df, use_container_width=True)
-        
-        # Calculate overall statistics
-        total_ops = len(ss.base_df_ops)
-        ops_with_vendor = 0
-        ops_without_vendor = 0
-        vendor_cheaper_at_20 = 0
-        vendor_cheaper_at_50 = 0
-        
-        for idx, op in ss.base_df_ops.iterrows():
-            inhouse_20, _ = calculate_inhouse_cost(op, ss.base_df_effective, hourly_rate=20)
-            inhouse_50, _ = calculate_inhouse_cost(op, ss.base_df_effective, hourly_rate=50)
-            vendor = op.get('Outsource_Cost', 0)
-            
-            if vendor > 0:
-                ops_with_vendor += 1
-                if vendor < inhouse_20 * 0.85:
-                    vendor_cheaper_at_20 += 1
-                if vendor < inhouse_50 * 0.85:
-                    vendor_cheaper_at_50 += 1
-            else:
-                ops_without_vendor += 1
-        
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric(
-                "Operations with Vendors",
-                f"{ops_with_vendor}",
-                f"{(ops_with_vendor/total_ops*100):.1f}%"
-            )
-        with col2:
-            st.metric(
-                "Vendor Wins @ $20/hr",
-                f"{vendor_cheaper_at_20}",
-                f"{(vendor_cheaper_at_20/ops_with_vendor*100):.1f}%" if ops_with_vendor > 0 else "N/A"
-            )
-        with col3:
-            st.metric(
-                "Vendor Wins @ $50/hr",
-                f"{vendor_cheaper_at_50}",
-                f"{(vendor_cheaper_at_50/ops_with_vendor*100):.1f}%" if ops_with_vendor > 0 else "N/A"
-            )
-        with col4:
-            st.metric(
-                "No Vendor Option",
-                f"{ops_without_vendor}",
-                "Always In-House"
-            )
-        
-        # Recommendations
-        st.markdown("##### 💡 Recommendations to Reduce Outsourcing")
-        
-        if ops_with_vendor == 0:
-            st.info("ℹ️ No operations have vendor options. All work must be done in-house.")
-        elif vendor_cheaper_at_20 > ops_with_vendor * 0.5:
-            st.error(f"""
-            **ISSUE**: {vendor_cheaper_at_20} out of {ops_with_vendor} vendor-capable operations ({vendor_cheaper_at_20/ops_with_vendor*100:.1f}%) 
-            have vendor costs cheaper than in-house even at $20/hr.
-            
-            **Root Cause**: Vendor pricing is too competitive compared to in-house costs.
-            
-            **Solutions**:
-            1. **Increase vendor prices** in `vendor_data.csv`:
-               - Unit costs: Increase by 50-100% (e.g., $0.35 → $0.60)
-               - Transport costs: Increase by 30-50% (e.g., $40 → $60)
-            
-            2. **Lower cost_threshold** from 0.85 to 0.5-0.7:
-               - More aggressive preference for keeping work in-house
-               - Only outsource when vendor is significantly cheaper
-            
-            3. **Add realistic overhead to in-house**:
-               - Tooling wear: ~$0.20-$0.30 per unit
-               - Machine depreciation: ~$0.15-$0.20 per unit
-               - Utilities & facility: 15-20% of labor cost
-            
-            4. **Review material costs**:
-               - Current: $0.50/unit (may be too low)
-               - Consider: $0.75-$1.50/unit for realistic costs
-            
-            **Quick Fix**: Edit line 851 in cnc-scheduling.py, change `cost_threshold=0.85` to `cost_threshold=0.60`
-            """)
-        elif vendor_cheaper_at_20 > ops_with_vendor * 0.3:
-            st.warning(f"""
-            **Moderate Outsourcing**: {vendor_cheaper_at_20} out of {ops_with_vendor} vendor-capable operations 
-            ({vendor_cheaper_at_20/ops_with_vendor*100:.1f}%) are outsourced at $20/hr.
-            
-            This is reasonable but you can reduce outsourcing by:
-            - Adjusting cost_threshold from 0.85 to 0.70
-            - Slightly increasing vendor prices (10-20%)
-            """)
-        else:
-            st.success(f"""
-            ✅ **Healthy Balance**: Only {vendor_cheaper_at_20} out of {ops_with_vendor} vendor-capable operations 
-            ({vendor_cheaper_at_20/ops_with_vendor*100:.1f}%) prefer vendors at $20/hr.
-            
-            Outsourcing decisions appear cost-driven and appropriate.
-            """)
-        
-        # Additional context
-        if ops_without_vendor > 0:
-            st.info(f"""
-            ℹ️ **Note**: {ops_without_vendor} operations ({ops_without_vendor/total_ops*100:.1f}%) have no vendor option 
-            (Outsource_Flag=N in dataset). These operations will ALWAYS be done in-house regardless of hourly rate.
-            
-            To enable outsourcing for these operations:
-            1. Edit `data/jobs_dataset.csv`
-            2. Change Outsource_Flag from `N` to `Y`
-            3. Add appropriate Vendor_Ref (e.g., V_Mill_Std, V_Turn_Std)
-            """)
-        
-        # Show data summary
-        st.markdown(f"#### 📊 Summary Table - {analysis_heuristic} Results")
-        display_df = sim_df[['Hourly_Rate', 'Outsourcing_%', 'In-House_Ops', 'Outsourced_Ops', 'In-House_Cost_$', 'Outsource_Cost_$', 'Total_Cost_$']].copy()
-        display_df.columns = ['Rate ($/hr)', 'Outsource %', 'In-House Ops', 'Outsourced Ops', 'In-House $', 'Outsource $', 'Total $']
-        display_df = display_df.round(1)
-        st.dataframe(display_df, use_container_width=True, height=300)
-        st.caption(f"💡 Change the scheduling algorithm above to see how different heuristics affect the trade-offs")
-    
-    # ✅ ACTIVITY LOG DISPLAY
-    if hasattr(ss, 'activity_log') and len(ss.activity_log) > 0:
-        activity_count = len(ss.activity_log)
-        with st.expander(f"📋 Activity Log ({activity_count} activities recorded)", expanded=True):
-            log_df = pd.DataFrame(ss.activity_log)
-            # Reverse to show most recent first
-            log_df = log_df.iloc[::-1].reset_index(drop=True)
-            
-            st.caption("**Most Recent Activities First** ⬇️")
-            st.dataframe(
-                log_df[['timestamp', 'action', 'details', 'affected_items']], 
-                use_container_width=True,
-                height=300
-            )
-            
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.caption(f"📊 Total: {activity_count} logged activities")
-            with col2:
-                # Download activity log
-                log_csv = log_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="💾 Download CSV",
-                    data=log_csv,
-                    file_name=f"activity_log_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime='text/csv',
-                    use_container_width=True
-                )
-            
-            # 🤖 AI Activity Log Analysis
-            if AI_ENABLED:
-                if st.button("🤖 Analyze Activity Patterns", key="ai_activity_analysis"):
-                    with st.spinner("🤖 AI analyzing activity patterns..."):
-                        recent_activities = log_df.head(10).to_dict('records')
-                        action_counts = log_df['action'].value_counts().to_dict()
-                        
-                        context = {
-                            "Total Activities": activity_count,
-                            "Recent Activities (last 10)": [f"{a['timestamp']}: {a['action']}" for a in recent_activities],
-                            "Action Distribution": action_counts,
-                            "Most Common Action": log_df['action'].mode()[0] if not log_df['action'].mode().empty else "N/A"
-                        }
-                        
-                        prompt = f"""
-Analyze the activity log patterns from this CNC scheduling system.
-
-Provide insights on:
-1. Overall system usage patterns and trends
-2. Frequency and timing of critical actions (breakdowns, priority changes, etc.)
-3. Potential operational inefficiencies or concerns based on activity patterns
-4. Recommendations for improving workflow based on observed activities
-"""
-                        
-                        insights = get_ai_insights(prompt, context)
-                        st.info("🤖 **AI Activity Pattern Analysis:**")
-                        st.markdown(insights)
-    else:
-        st.info("📋 **Activity Log**: No activities recorded yet. Actions will appear here once you start using the system.")
 
     # ✅ Automatically recompute metrics when dataset changes
     recalc_flag = st.session_state.get('recalculate_all_heuristics', False)
@@ -3143,66 +2006,6 @@ Provide insights on:
             st.success(f"🏆 Recommended heuristic (by lowest Total Tardiness): **{best_row['Heuristic']}**")
             st.write("Recommendation details:")
             st.write(best_row.to_dict())
-            
-            # 🤖 AI Insights Button for Heuristic Comparison
-            if AI_ENABLED:
-                col1, col2 = st.columns([3, 1])
-                with col2:
-                    if st.button("🤖 AI Analysis", key="ai_heuristic_comparison", use_container_width=True):
-                        with st.spinner("🤖 AI comparing all heuristics..."):
-                            comparison_data = ss.df_metrics.to_dict('records')
-                            context = {
-                                "Number of Heuristics": len(comparison_data),
-                                "Comparison Metrics": comparison_data,
-                                "Recommended": best_row['Heuristic'],
-                                "Total Operations": len(ss.base_df_ops),
-                                "Total Machines": len(ss.base_df_machines)
-                            }
-                            
-                            prompt = f"""
-You are comparing {len(comparison_data)} scheduling heuristics on the same CNC dataset.
-
-**HEURISTICS EVALUATED:**
-{', '.join([f"{h['Heuristic']} (Makespan: {h['Makespan_Days']}d, Tardiness: {h['Total_Tardiness_Days']}d, Cost: ${h['Total_Cost_$']:,.0f})" for h in comparison_data])}
-
-**TOP RECOMMENDATION:** {best_row['Heuristic']}
-
-**ANALYSIS REQUIRED:**
-
-1. **Why {best_row['Heuristic']} Wins** (2-3 sentences)
-   - Identify which specific metrics make it the best choice
-   - Quantify the advantage (e.g., "30% lower tardiness than SPT")
-
-2. **Runner-Up Alternative**
-   - Identify the 2nd best heuristic
-   - Explain when you'd choose it instead (specific scenarios)
-
-3. **Trade-Off Analysis** (for each heuristic)
-   - SPT: Best for _____, worst for _____
-   - EDD: Best for _____, worst for _____
-   - CR: Best for _____, worst for _____
-   - PRIORITY: Best for _____, worst for _____
-
-4. **Business Decision Guide**
-   - If primary goal is cost reduction → Choose _____
-   - If primary goal is on-time delivery → Choose _____
-   - If primary goal is throughput → Choose _____
-   - If workload is balanced → Choose _____
-
-5. **Actionable Recommendation**
-   - Should the user stick with {best_row['Heuristic']} or try another based on their goals?
-   - What's the #1 factor that would change this recommendation?
-
-**FORMAT:**
-- Use specific numbers from the comparison data
-- Be decisive, not generic
-- Keep under 400 words
-- Use bullet points for clarity
-"""
-                            
-                            insights = get_ai_insights(prompt, context)
-                            st.info("🤖 **AI Heuristic Comparison Analysis:**")
-                            st.markdown(insights)
         except Exception:
             pass
 
@@ -3270,16 +2073,6 @@ def initialize_app(ss):
         ss.current_heuristic = None
     if "last_applied_heuristic" not in ss:
         ss.last_applied_heuristic = None
-    
-    # ✅ Initialize Activity Log
-    if "activity_log" not in ss:
-        ss.activity_log = []
-        ss.activity_log.append({
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'action': 'System Initialized',
-            'details': f'Loaded {len(df_ops)} operations, {len(df_machines)} machines',
-            'affected_items': 'All'
-        })
 
 
 
