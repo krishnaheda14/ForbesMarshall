@@ -3293,6 +3293,123 @@ def initialize_app(ss):
     st.toast("System initialized (raw data loaded).", icon="✅")
 
 def main():
+    # Custom CSS for modern UI
+    st.markdown("""
+    <style>
+    /* Main container styling */
+    .main {
+        background-color: #f8f9fa;
+    }
+    
+    /* Custom metric cards */
+    [data-testid="stMetricValue"] {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #1e3a8a;
+    }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #1e3a8a 0%, #3b82f6 100%);
+    }
+    
+    [data-testid="stSidebar"] * {
+        color: white !important;
+    }
+    
+    /* Button styling */
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        border: none;
+        padding: 0.5rem 1rem;
+    }
+    
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
+    /* Success boxes */
+    .stSuccess {
+        background-color: #d1fae5;
+        border-left: 4px solid #10b981;
+        border-radius: 8px;
+    }
+    
+    /* Info boxes */
+    .stInfo {
+        background-color: #dbeafe;
+        border-left: 4px solid #3b82f6;
+        border-radius: 8px;
+    }
+    
+    /* Warning boxes */
+    .stWarning {
+        background-color: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        border-radius: 8px;
+    }
+    
+    /* Error boxes */
+    .stError {
+        background-color: #fee2e2;
+        border-left: 4px solid #ef4444;
+        border-radius: 8px;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: white;
+        border-radius: 8px;
+        padding: 0.5rem;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 6px;
+        padding: 0.5rem 1.5rem;
+        font-weight: 600;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        background-color: white;
+        border-radius: 8px;
+        font-weight: 600;
+        border-left: 4px solid #3b82f6;
+    }
+    
+    /* Dataframe styling */
+    .dataframe {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Headers */
+    h1 {
+        color: #1e3a8a;
+        font-weight: 800;
+        padding-bottom: 1rem;
+        border-bottom: 3px solid #3b82f6;
+    }
+    
+    h2 {
+        color: #1e40af;
+        font-weight: 700;
+        margin-top: 2rem;
+    }
+    
+    h3 {
+        color: #1e40af;
+        font-weight: 600;
+        margin-top: 1.5rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     st.title("🏭 Advanced CNC Job Scheduling System (Operation-Specific)")
     st.success("✅ **VERSION 2.0 (Operation-Level)** - Job → Operation granularity applied")
 
@@ -3311,14 +3428,18 @@ def main():
         if 'schedule_update_key' not in ss:
             ss.schedule_update_key = str(time.time())
 
-        st.sidebar.title("Controls")
+        st.sidebar.markdown("### 🎛️ Control Panel")
+        st.sidebar.markdown("---")
+        
+        st.sidebar.markdown("#### 📊 Navigation")
         page = st.sidebar.radio(
-            "📋 Select Page",
-            ["Heuristic Comparison", "Selected Heuristic View"],
-            index=0 if ss.current_page == "comparison" else 1
+            "Select View",
+            ["📊 Heuristic Comparison", "🔍 Detailed Analysis"],
+            index=0 if ss.current_page == "comparison" else 1,
+            label_visibility="collapsed"
         )
-        ss.current_page = "comparison" if page == "Heuristic Comparison" else "heuristic_view"
-        st.sidebar.divider()
+        ss.current_page = "comparison" if "Comparison" in page else "heuristic_view"
+        st.sidebar.markdown("---")
 
         # New compute/apply controls
         draw_compute_apply_controls(ss)
@@ -3339,13 +3460,26 @@ def main():
         # Main view
         # ---------------- MAIN PAGE ROUTING ----------------
         if ss.current_page == "comparison":
-            st.title("⚖ Heuristic Comparison & Recommendation")
-            st.info("Compare all scheduling heuristics on the current dataset and choose the best one to apply.")
+            st.markdown("""
+            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 12px; margin-bottom: 2rem;'>
+                <h1 style='color: white; margin: 0; border: none; padding: 0;'>⚖ Heuristic Comparison & Recommendation</h1>
+                <p style='color: #e0e7ff; margin-top: 0.5rem; font-size: 1.1rem;'>AI-powered analysis to find the optimal scheduling algorithm for your operations</p>
+            </div>
+            """, unsafe_allow_html=True)
             draw_comparison_tab(ss)
             st.divider()
             st.markdown("### 💡 Once you choose a heuristic, go to 'Selected Heuristic View' from the sidebar to see details.")
         else:
-            st.title(f"📊 {ss.current_heuristic or 'No heuristic selected yet'} — Detailed View")
+            if ss.current_heuristic:
+                st.markdown(f"""
+                <div style='background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 2rem; border-radius: 12px; margin-bottom: 2rem;'>
+                    <h1 style='color: white; margin: 0; border: none; padding: 0;'>📊 {ss.current_heuristic} Algorithm</h1>
+                    <p style='color: #ffe0e0; margin-top: 0.5rem; font-size: 1.1rem;'>Detailed schedule analysis and performance breakdown</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.title("📊 No heuristic selected yet — Detailed View")
+            
             if ss.current_heuristic:
                 draw_kpi_dashboard(ss)
                 tab1, tab2 = st.tabs(["📈 Gantt Chart", "📋 Operation Status"])

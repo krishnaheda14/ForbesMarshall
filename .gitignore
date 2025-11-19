@@ -1,3 +1,7 @@
+.web
+.states
+*.db
+assets/external/
 # Environment variables (API keys, secrets)
 .env
 .env.local

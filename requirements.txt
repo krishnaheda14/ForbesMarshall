@@ -10,3 +10,5 @@ python-dotenv>=1.0.0
 
 # Optional enhancements
 openpyxl>=3.1.0  # For Excel export
+
+reflex==0.8.20
