@@ -1,6 +1,6 @@
 import reflex as rx
 
 config = rx.Config(
-    app_name="cnc_scheduler",
+    app_name="reflex_app",
     db_url="sqlite:///reflex.db",
 )

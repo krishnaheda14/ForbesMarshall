@@ -1,0 +1,6 @@
+Machine ID,Machine Type,Tool Capacity,Worker Requirement,"Scheduled Maintenance (Day, Time-Time)",Speed Factor,OEE (Uptime)
+M1,MILLING,24,1,None,1,0.9
+M3,MILLING,18,1.5 (Shared),"Day 3, 13:00-15:00",1.1 (Slower),0.75
+M4,MILLING,32,1,None,0.9 (Faster),0.95
+M6,TURNING/GRINDING,12,1,"Day 7, 09:00-12:00",1,0.85
+M9,TURNING/GRINDING,16,1,None,0.9 (Faster),0.92

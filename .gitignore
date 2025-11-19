@@ -2,6 +2,7 @@
 .states
 *.db
 assets/external/
+
 # Environment variables (API keys, secrets)
 .env
 .env.local
@@ -35,6 +36,17 @@ env/
 ENV/
 env.bak/
 venv.bak/
+
+# Node.js / Frontend
+node_modules/
+frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+frontend/dist/
+frontend/build/
+.vite/
 
 # IDE
 .vscode/
