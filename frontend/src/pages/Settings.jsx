@@ -32,7 +32,7 @@ function Settings() {
   return (
     <Container maxWidth="xl">
       <Typography variant="h1" gutterBottom>
-        ⚙️ Settings
+        Settings
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
         System configuration and management

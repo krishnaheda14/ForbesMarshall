@@ -66,8 +66,11 @@ function Comparison() {
       setLoadingAI(true);
       const metricsData = Object.values(metrics).map((m) => m.metrics);
       
-      const prompt = `Compare all heuristics and recommend the best one based on the metrics. 
-      Explain trade-offs between makespan, tardiness, cost, and utilization.`;
+      const prompt = `Analyze the heuristic performance metrics and identify:
+- Which heuristic achieves the best overall performance and why
+- Key trade-offs between makespan, tardiness, total cost, and machine utilization
+- Specific metric values that support your recommendation
+- Any notable strengths or weaknesses of each approach`;
       
       const result = await getAIInsights(prompt, { comparison_data: metricsData });
       setAiInsights(result.insights);
@@ -87,7 +90,7 @@ function Comparison() {
     return (
       <Container maxWidth="xl">
         <Typography variant="h1" gutterBottom>
-          ⚖️ Heuristic Comparison
+          Heuristic Comparison
         </Typography>
         <Alert severity="info">
           No metrics available. Please load data and compute heuristics from the sidebar.
@@ -143,7 +146,7 @@ function Comparison() {
       <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Box>
           <Typography variant="h1" gutterBottom>
-            ⚖️ Heuristic Comparison
+            Heuristic Comparison
           </Typography>
           <Typography variant="body1" color="text.secondary">
             Compare performance across all scheduling algorithms

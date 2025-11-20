@@ -116,6 +116,7 @@ class SchemaMapper:
             Dict mapping column names to {field, confidence, reasoning}
         """
         if not self.gemini_model:
+            print("[SchemaMapper] No Gemini model available, skipping LLM mapping")
             return {}
         
         try:
@@ -123,6 +124,7 @@ class SchemaMapper:
             prompt = self._build_llm_prompt(columns_info, sample_rows)
             
             # Call Gemini
+            print("[SchemaMapper] Calling Gemini API for column mapping...")
             response = self.gemini_model.generate_content(prompt)
             
             # Parse JSON response
@@ -157,10 +159,12 @@ class SchemaMapper:
                     'reasoning': reasoning
                 }
             
+            print(f"[SchemaMapper] LLM successfully mapped {len(mappings)} columns")
             return mappings
             
         except Exception as e:
-            print(f"LLM mapping failed: {e}")
+            print(f"[SchemaMapper] LLM mapping failed: {type(e).__name__}: {str(e)}")
+            print(f"[SchemaMapper] Falling back to heuristic-only mapping")
             return {}
     
     def _build_llm_prompt(

@@ -26,8 +26,8 @@ function MachineryControls() {
   
   // Breakdown state
   const [machineId, setMachineId] = useState('M1');
-  const [breakdownStart, setBreakdownStart] = useState(5000);
-  const [breakdownDuration, setBreakdownDuration] = useState(240);
+  const [breakdownStart, setBreakdownStart] = useState(1000);
+  const [breakdownDuration, setBreakdownDuration] = useState(100);
   
   // Priority state
   const [jobId, setJobId] = useState('');
@@ -39,10 +39,16 @@ function MachineryControls() {
   const handleBreakdown = async () => {
     try {
       await simulateBreakdown(machineId, breakdownStart, breakdownDuration);
-      enqueueSnackbar('Breakdown simulated. Recompute heuristics to see impact.', {
+      enqueueSnackbar('Breakdown simulated! View in Gantt Chart.', {
         variant: 'success',
       });
+      
+      console.log('Breakdown simulated, dispatching event...');
+      // Trigger Gantt chart refresh without recomputing
+      window.dispatchEvent(new CustomEvent('breakdown-updated'));
+      console.log('Breakdown-updated event dispatched');
     } catch (error) {
+      console.error('Breakdown simulation error:', error);
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
         variant: 'error',
       });
@@ -71,8 +77,16 @@ function MachineryControls() {
   const handleOutsourcingUpdate = async () => {
     try {
       const result = await updateOutsourcingPolicy(costThreshold);
+      
+      // Update metrics in store for all recomputed heuristics
+      if (result.metrics) {
+        Object.entries(result.metrics).forEach(([heur, metrics]) => {
+          useSchedulerStore.getState().addSchedule(heur, result.metrics[heur], metrics);
+        });
+      }
+      
       enqueueSnackbar(
-        `Outsourcing policy updated! ${result.new_outsourced_count}/${result.total_operations} operations outsourced.`, 
+        `${result.message} ${result.new_outsourced_count}/${result.total_operations} operations outsourced.`, 
         { variant: 'success' }
       );
       
@@ -126,8 +140,8 @@ function MachineryControls() {
           <Slider
             value={breakdownStart}
             onChange={(e, val) => setBreakdownStart(val)}
-            min={5000}
-            max={20000}
+            min={0}
+            max={25000}
             step={100}
             sx={{ mb: 1.5, color: 'white' }}
           />
@@ -137,9 +151,9 @@ function MachineryControls() {
           <Slider
             value={breakdownDuration}
             onChange={(e, val) => setBreakdownDuration(val)}
-            min={30}
-            max={5000}
-            step={30}
+            min={0}
+            max={500}
+            step={10}
             sx={{ mb: 1.5, color: 'white' }}
           />
           <Button

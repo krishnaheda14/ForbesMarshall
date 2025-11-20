@@ -17,6 +17,7 @@ import {
   Insights as AIIcon,
   CheckCircle as CheckIcon,
   Refresh as RefreshIcon,
+  Info as InfoIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import useSchedulerStore from '../store/useSchedulerStore';
@@ -52,13 +53,6 @@ function Dashboard() {
     }
   }, [currentHeuristic]);
 
-  // Auto-fetch AI insights when heuristic is applied
-  useEffect(() => {
-    if (currentHeuristic && currentSchedule && !aiInsights) {
-      autoFetchAIInsights();
-    }
-  }, [currentHeuristic, currentSchedule]);
-
   const checkDataStatus = async () => {
     try {
       const result = await getDataInfo();
@@ -85,7 +79,14 @@ function Dashboard() {
     }
   };
 
-  const autoFetchAIInsights = async () => {
+  const handleGetAIInsights = async () => {
+    if (!currentSchedule || !currentHeuristic) {
+      enqueueSnackbar('Please compute and apply a heuristic first', {
+        variant: 'warning',
+      });
+      return;
+    }
+
     try {
       setLoadingAI(true);
       const currentMetrics = metrics[currentHeuristic] || {};
@@ -97,8 +98,12 @@ function Dashboard() {
       });
       
       setAiInsights(result.insights);
+      enqueueSnackbar('AI insights generated!', { variant: 'success' });
     } catch (error) {
       console.error('Failed to fetch AI insights:', error);
+      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
+        variant: 'error',
+      });
     } finally {
       setLoadingAI(false);
     }
@@ -122,10 +127,7 @@ function Dashboard() {
     }
   };
 
-  const handleRefreshInsights = async () => {
-    setAiInsights(null);
-    await autoFetchAIInsights();
-  };
+
 
   return (
     <Container maxWidth="xl">
@@ -209,17 +211,19 @@ function Dashboard() {
               <Box sx={{ mb: 3 }}>
                 <Card>
                   <CardContent>
-                    <Typography variant="h6">
-                      Active Heuristic: <strong>{currentHeuristic}</strong>
-                    </Typography>
-                    {loadingAI && (
-                      <Box display="flex" alignItems="center" gap={1} mt={1}>
-                        <CircularProgress size={16} />
-                        <Typography variant="body2" color="text.secondary">
-                          Generating AI insights...
-                        </Typography>
-                      </Box>
-                    )}
+                    <Box display="flex" alignItems="center" justifyContent="space-between">
+                      <Typography variant="h6">
+                        Active Heuristic: <strong>{currentHeuristic}</strong>
+                      </Typography>
+                      <Button
+                        variant="outlined"
+                        onClick={handleGetAIInsights}
+                        disabled={loadingAI || !currentSchedule}
+                        startIcon={loadingAI ? <CircularProgress size={20} /> : <AIIcon />}
+                      >
+                        {loadingAI ? 'Analyzing...' : 'Get AI Insights'}
+                      </Button>
+                    </Box>
                   </CardContent>
                 </Card>
               </Box>
@@ -228,24 +232,7 @@ function Dashboard() {
 
               {aiInsights && (
                 <Box sx={{ mt: 3 }}>
-                  <Card>
-                    <CardContent>
-                      <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
-                        <Box display="flex" alignItems="center" gap={1}>
-                          <AIIcon color="primary" />
-                          <Typography variant="h6">AI Insights</Typography>
-                        </Box>
-                        <Button
-                          size="small"
-                          onClick={handleRefreshInsights}
-                          disabled={loadingAI}
-                        >
-                          Refresh Insights
-                        </Button>
-                      </Box>
-                      <AIInsightsPanel insights={aiInsights} />
-                    </CardContent>
-                  </Card>
+                  <AIInsightsPanel insights={aiInsights} onClose={() => setAiInsights(null)} />
                 </Box>
               )}
 

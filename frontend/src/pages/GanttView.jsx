@@ -21,6 +21,24 @@ function GanttView() {
   const [loading, setLoading] = useState(true); // Start with true to show loading state
   const [maintenanceData, setMaintenanceData] = useState([]);
   const [error, setError] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Listen for breakdown updates to refresh the chart
+  useEffect(() => {
+    const handleBreakdownUpdate = () => {
+      console.log('Breakdown update event received! Refreshing chart...');
+      fetchMaintenanceData();
+      setRefreshKey(prev => prev + 1);
+    };
+    
+    window.addEventListener('breakdown-updated', handleBreakdownUpdate);
+    console.log('Gantt chart: Registered breakdown-updated event listener');
+    
+    return () => {
+      window.removeEventListener('breakdown-updated', handleBreakdownUpdate);
+      console.log('Gantt chart: Unregistered breakdown-updated event listener');
+    };
+  }, []);
 
   useEffect(() => {
     if (currentHeuristic) {
@@ -48,6 +66,14 @@ function GanttView() {
   const fetchMaintenanceData = async () => {
     try {
       const result = await getMachineData();
+      console.log('Machine data fetched:', result);
+      
+      if (!result.machines || result.machines.length === 0) {
+        console.log('No machine data available yet');
+        setMaintenanceData([]);
+        return;
+      }
+      
       const maintenance = [];
       
       result.machines.forEach((machine) => {
@@ -69,6 +95,7 @@ function GanttView() {
         }
       });
       
+      console.log('Parsed maintenance windows:', maintenance);
       setMaintenanceData(maintenance);
     } catch (error) {
       console.error('Failed to fetch maintenance data:', error);
@@ -100,7 +127,7 @@ function GanttView() {
     return (
       <Container maxWidth="xl">
         <Typography variant="h1" gutterBottom>
-          📈 Gantt Chart
+          Gantt Chart
         </Typography>
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
@@ -117,7 +144,7 @@ function GanttView() {
     return (
       <Container maxWidth="xl">
         <Typography variant="h1" gutterBottom>
-          📈 Gantt Chart
+          Gantt Chart
         </Typography>
         <Alert severity="info" sx={{ mb: 2 }}>
           No schedule data available. Please follow these steps:
@@ -170,20 +197,26 @@ function GanttView() {
       `<extra></extra>`,
   }));
 
-  // Add maintenance windows (breakdowns) to Gantt chart
-  const maintenanceTraces = maintenanceData.map((maint) => ({
+  // Add maintenance windows (breakdowns) to Gantt chart as solid dark bars
+  const maintenanceTraces = maintenanceData.map((maint, idx) => ({
     x: [maint.start, maint.end],
     y: [maint.machine, maint.machine],
     type: 'line',
     mode: 'lines',
-    line: { width: 20, color: '#ef4444', dash: 'dot' },
+    line: { 
+      width: 25, 
+      color: '#1a1a1a', // Dark black/charcoal color
+    },
     name: `Breakdown - ${maint.machine}`,
     hovertemplate:
+      `<b>⚠️ BREAKDOWN/MAINTENANCE</b><br>` +
       `<b>Machine:</b> ${maint.machine}<br>` +
-      `<b>Type:</b> Breakdown/Maintenance<br>` +
       `<b>Start:</b> ${maint.start} min<br>` +
       `<b>End:</b> ${maint.end} min<br>` +
-      `<b>Duration:</b> ${maint.duration} min<extra></extra>`,
+      `<b>Duration:</b> ${maint.duration} min<br>` +
+      `<b>Status:</b> Machine Unavailable<extra></extra>`,
+    showlegend: true,
+    legendgroup: 'breakdown',
   }));
 
   const allTraces = [...ganttData, ...maintenanceTraces];
@@ -204,8 +237,13 @@ function GanttView() {
   };
 
   const handleRefresh = async () => {
+    console.log('Manual refresh triggered');
+    setLoading(true);
     await fetchSchedule();
     await fetchMaintenanceData();
+    setRefreshKey(prev => prev + 1);
+    setLoading(false);
+    console.log('Manual refresh completed');
   };
 
   return (
@@ -213,7 +251,7 @@ function GanttView() {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Box>
           <Typography variant="h1" gutterBottom>
-            📈 Gantt Chart
+            Gantt Chart
           </Typography>
           <Typography variant="body1" color="text.secondary">
             Visualizing {currentHeuristic} schedule across machines
@@ -242,13 +280,35 @@ function GanttView() {
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
           <CircularProgress />
         </Box>
+      ) : error ? (
+        <Alert severity="error">{error}</Alert>
+      ) : !currentSchedule || currentSchedule.length === 0 ? (
+        <Alert severity="info">
+          No schedule data available. Please compute a heuristic from the Dashboard first.
+        </Alert>
       ) : (
         <Card>
           <CardContent>
-            <Plot data={allTraces} layout={layout} style={{ width: '100%' }} />
+            {maintenanceData.length > 0 && (
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                <strong>{maintenanceData.length} Active Breakdown(s):</strong>
+                {maintenanceData.map((m, i) => (
+                  <div key={i}>
+                    • {m.machine}: {m.start}-{m.end} min (Duration: {m.duration} min)
+                  </div>
+                ))}
+              </Alert>
+            )}
+            
+            <Plot 
+              key={refreshKey} 
+              data={allTraces} 
+              layout={layout} 
+              style={{ width: '100%' }} 
+            />
 
             <Alert severity="info" sx={{ mt: 2 }}>
-              <strong>Tip:</strong> Hover over bars to see operation details. Each job has a unique color. Red dotted bars indicate breakdowns/maintenance windows.
+              <strong>Legend:</strong> Hover over bars to see operation details. Each job has a unique color. Dark bars indicate machine breakdowns/maintenance windows.
             </Alert>
           </CardContent>
         </Card>

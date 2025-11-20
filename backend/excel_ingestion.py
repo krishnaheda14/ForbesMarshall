@@ -131,17 +131,22 @@ class ExcelIngestor:
         col_lower = column_name.lower()
         
         # Job ID patterns
-        if any(term in col_lower for term in ['job', 'order', 'wo', 'work_order', 'job_id', 'order_id']):
-            return 'job_id'
+        if any(term in col_lower for term in ['job', 'order', 'wo', 'work_order', 'job_id', 'order_id', 'number']):
+            if 'number' in col_lower or 'id' in col_lower:
+                return 'job_id'
+        
+        # Operation ID patterns
+        if any(term in col_lower for term in ['operation', 'op_id', 'step', 'stage', 'sequence']):
+            return 'operation_id'
         
         # Processing time patterns
-        if any(term in col_lower for term in ['proc', 'process', 'runtime', 'duration', 'time', 'hours', 'minutes']):
+        if any(term in col_lower for term in ['proc', 'process', 'runtime', 'duration', 'time', 'hours', 'minutes', 'hrs']):
             if pd.api.types.is_numeric_dtype(column_data):
                 return 'processing_time'
         
-        # Due date patterns
-        if any(term in col_lower for term in ['due', 'deadline', 'promise', 'delivery', 'target']):
-            if pd.api.types.is_datetime64_any_dtype(column_data) or 'date' in col_lower:
+        # Due date patterns (includes "planned finish", "finish date", etc.)
+        if any(term in col_lower for term in ['due', 'deadline', 'promise', 'delivery', 'target', 'finish', 'completion', 'end']):
+            if pd.api.types.is_datetime64_any_dtype(column_data) or 'date' in col_lower or 'finish' in col_lower:
                 return 'due_date'
         
         # Release date patterns
@@ -162,17 +167,34 @@ class ExcelIngestor:
             if pd.api.types.is_numeric_dtype(column_data):
                 return 'quantity'
         
-        # Outsourcing patterns
-        if any(term in col_lower for term in ['outsource', 'vendor', 'supplier', 'subcon', 'external']):
-            return 'outsourcing'
+        # Outsourcing cost patterns (specific check for cost)
+        if any(term in col_lower for term in ['outsourc', 'subcontract', 'external']):
+            if 'cost' in col_lower or 'price' in col_lower or 'rate' in col_lower:
+                if pd.api.types.is_numeric_dtype(column_data):
+                    return 'outsourcing_cost'
+            else:
+                return 'can_outsource'
+        
+        # Can outsource patterns (Yes/No type)
+        if any(term in col_lower for term in ['can_outsource', 'outsourceable', 'allow_outsource']):
+            return 'can_outsource'
+        
+        # Vendor patterns
+        if any(term in col_lower for term in ['vendor', 'supplier', 'subcon']):
+            return 'vendor_id'
         
         # Material/part patterns
         if any(term in col_lower for term in ['part', 'material', 'product', 'item']):
             return 'part_type'
         
+        # Setup time patterns
+        if any(term in col_lower for term in ['setup', 'changeover', 'tooling']):
+            if pd.api.types.is_numeric_dtype(column_data):
+                return 'setup_time'
+        
         # Customer patterns
         if any(term in col_lower for term in ['customer', 'client', 'account']):
-            return 'customer_metadata'
+            return 'customer'
         
         return 'other'
     

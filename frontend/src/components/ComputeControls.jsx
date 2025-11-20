@@ -1,5 +1,5 @@
 // src/components/ComputeControls.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Button, 
   Box, 
@@ -41,6 +41,23 @@ function ComputeControls() {
     total: HEURISTICS.length,
     startTime: null
   });
+  const [elapsedTime, setElapsedTime] = useState(0);
+
+  // Timer to continuously update elapsed time
+  useEffect(() => {
+    let interval;
+    if (computeProgress.active && computeProgress.startTime) {
+      interval = setInterval(() => {
+        setElapsedTime(((Date.now() - computeProgress.startTime) / 1000).toFixed(1));
+      }, 100); // Update every 100ms for smooth counting
+    } else {
+      setElapsedTime(0);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [computeProgress.active, computeProgress.startTime]);
 
   const handleComputeAll = async () => {
     try {
@@ -64,7 +81,7 @@ function ComputeControls() {
       
       setMetrics(result.results);
       
-      const elapsed = ((Date.now() - computeProgress.startTime) / 1000).toFixed(1);
+      const finalElapsed = ((Date.now() - computeProgress.startTime) / 1000).toFixed(1);
       
       setComputeProgress({
         active: false,
@@ -74,7 +91,7 @@ function ComputeControls() {
         startTime: null
       });
       
-      enqueueSnackbar(`All heuristics computed in ${elapsed}s!`, { variant: 'success' });
+      enqueueSnackbar(`All heuristics computed in ${finalElapsed}s!`, { variant: 'success' });
     } catch (error) {
       setComputeProgress({
         active: false,
@@ -211,7 +228,7 @@ function ComputeControls() {
           
           {computeProgress.startTime && (
             <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.6)', display: 'block', mt: 0.5, textAlign: 'center' }}>
-              Elapsed: {((Date.now() - computeProgress.startTime) / 1000).toFixed(1)}s
+              Elapsed: {elapsedTime}s
             </Typography>
           )}
         </Paper>

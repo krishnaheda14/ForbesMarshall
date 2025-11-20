@@ -111,7 +111,11 @@ function ExcelUpload() {
       
       const response = await axios.post(`${API_BASE}/api/excel/auto-map`, formData);
       
+      console.log('Auto-map response:', response.data);
+      
       const mappingData = response.data.mappings;
+      console.log('Mapping data:', mappingData);
+      
       setColumns(mappingData);
       
       // Set initial mappings
@@ -119,11 +123,14 @@ function ExcelUpload() {
       mappingData.forEach(m => {
         initialMappings[m.excel_column] = m.canonical_field;
       });
+      console.log('Initial mappings:', initialMappings);
       setMappings(initialMappings);
       
       // Get available fields
       if (mappingData.length > 0) {
-        setAvailableFields(mappingData[0].available_fields || []);
+        const fields = mappingData[0].available_fields || [];
+        console.log('Available fields:', fields);
+        setAvailableFields(fields);
       }
       
       setActiveStep(1);
@@ -215,11 +222,11 @@ function ExcelUpload() {
       setTimeout(async () => {
         try {
           const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
-            prompt: `Analyze this ${heuristic} scheduling result and provide insights on performance, bottlenecks, and recommendations:\nMetrics: ${JSON.stringify(response.data.metrics)}`,
+            prompt: `Analyze the ${heuristic} scheduling results:\n- Evaluate key performance metrics (makespan, tardiness, total cost, utilization)\n- Identify potential bottlenecks or inefficiencies\n- Provide specific recommendations for improvement\n\nMetrics: ${JSON.stringify(response.data.metrics)}`,
             context_data: response.data.metrics
           });
           
-          setAiInsights(cleanAIInsights(aiResponse.data.response));
+          setAiInsights(cleanAIInsights(aiResponse.data.insights));
         } catch (error) {
           console.error('Failed to fetch AI insights:', error);
         }
@@ -276,11 +283,11 @@ function ExcelUpload() {
       const metricsData = response.data.results;
       
       const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
-        prompt: `Analyze these scheduling results and recommend the best heuristic:\n${JSON.stringify(metricsData, null, 2)}`,
+        prompt: `Evaluate the performance of these scheduling heuristics:\n- Identify the best performing heuristic and explain why\n- Highlight specific metric differences (makespan, tardiness, cost, utilization)\n- Note any trade-offs between different objectives\n- Recommend which heuristic to use for this dataset\n\nResults:\n${JSON.stringify(metricsData, null, 2)}`,
         context_data: metricsData
       });
       
-      setAiInsights(cleanAIInsights(aiResponse.data.response));
+      setAiInsights(cleanAIInsights(aiResponse.data.insights));
       setAiInsightsOpen(true);
       
     } catch (error) {
@@ -322,8 +329,8 @@ function ExcelUpload() {
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Typography variant="h4" gutterBottom>
-        📊 Excel Data Import
+      <Typography variant="h1" gutterBottom>
+        Excel Data Import
       </Typography>
       
       <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
@@ -397,53 +404,59 @@ function ExcelUpload() {
             Our AI has automatically mapped your columns. Review and adjust if needed.
           </Alert>
           
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Excel Column</TableCell>
-                  <TableCell>Detected As</TableCell>
-                  <TableCell>Confidence</TableCell>
-                  <TableCell>Source</TableCell>
-                  <TableCell>Correct Mapping</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {columns.map((col) => (
-                  <TableRow key={col.excel_column}>
-                    <TableCell>
-                      <strong>{col.excel_column}</strong>
-                    </TableCell>
-                    <TableCell>{col.canonical_field}</TableCell>
-                    <TableCell>
-                      <Chip
-                        label={`${Math.round(col.confidence * 100)}%`}
-                        color={getConfidenceColor(col.confidence)}
-                        size="small"
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Chip label={col.source} size="small" variant="outlined" />
-                    </TableCell>
-                    <TableCell>
-                      <FormControl fullWidth size="small">
-                        <Select
-                          value={mappings[col.excel_column] || col.canonical_field}
-                          onChange={(e) => handleMappingChange(col.excel_column, e.target.value)}
-                        >
-                          {availableFields.map(field => (
-                            <MenuItem key={field} value={field}>
-                              {field}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    </TableCell>
+          {columns.length === 0 ? (
+            <Alert severity="warning">
+              No column mappings found. Please try uploading the file again.
+            </Alert>
+          ) : (
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Excel Column</TableCell>
+                    <TableCell>Detected As</TableCell>
+                    <TableCell>Confidence</TableCell>
+                    <TableCell>Source</TableCell>
+                    <TableCell>Correct Mapping</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                </TableHead>
+                <TableBody>
+                  {columns.map((col) => (
+                    <TableRow key={col.excel_column}>
+                      <TableCell>
+                        <strong>{col.excel_column}</strong>
+                      </TableCell>
+                      <TableCell>{col.canonical_field}</TableCell>
+                      <TableCell>
+                        <Chip
+                          label={`${Math.round(col.confidence * 100)}%`}
+                          color={getConfidenceColor(col.confidence)}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip label={col.source} size="small" variant="outlined" />
+                      </TableCell>
+                      <TableCell>
+                        <FormControl fullWidth size="small">
+                          <Select
+                            value={mappings[col.excel_column] || col.canonical_field}
+                            onChange={(e) => handleMappingChange(col.excel_column, e.target.value)}
+                          >
+                            {(availableFields.length > 0 ? availableFields : col.available_fields || []).map(field => (
+                              <MenuItem key={field} value={field}>
+                                {field}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
           
           {loading && (
             <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
@@ -517,7 +530,7 @@ function ExcelUpload() {
           
           <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Typography variant="h6" gutterBottom sx={{ mt: 2 }}>
-              🚀 Schedule Jobs
+              Schedule Jobs
             </Typography>
             
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
@@ -600,7 +613,7 @@ function ExcelUpload() {
             </Box>
             
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, fontStyle: 'italic' }}>
-              💡 Tip: Each algorithm optimizes for different criteria. SPT minimizes average completion time, 
+              Tip: Each algorithm optimizes for different criteria. SPT minimizes average completion time, 
               EDD reduces tardiness, CR balances urgency and time, PRIORITY respects job priorities.
             </Typography>
             
@@ -627,7 +640,7 @@ function ExcelUpload() {
       {scheduleResult && (
         <Paper sx={{ p: 3, mt: 3 }}>
           <Typography variant="h5" gutterBottom>
-            📊 Scheduling Results - {selectedHeuristic}
+            Scheduling Results - {selectedHeuristic}
           </Typography>
 
           <Alert severity="success" sx={{ mb: 3 }}>
@@ -806,26 +819,49 @@ function ExcelUpload() {
             <Card sx={{ mb: 3 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  📈 Gantt Chart Visualization
+                  Gantt Chart Visualization
                 </Typography>
                 <Plot
-                  data={scheduleResult.schedule.map((item) => ({
-                    x: [item.Start_Time, item.End_Time],
-                    y: [item.Machine_ID, item.Machine_ID],
-                    type: 'line',
-                    mode: 'lines',
-                    line: { width: 20, color: '#1976d2' },
-                    name: `${item.Job_ID} - ${item.Operation_ID}`,
-                    hovertemplate:
-                      `<b>Machine:</b> ${item.Machine_ID}<br>` +
-                      `<b>Job:</b> ${item.Job_ID}<br>` +
-                      `<b>Operation:</b> ${item.Operation_ID}<br>` +
-                      `<b>Start:</b> ${item.Start_Time} min<br>` +
-                      `<b>End:</b> ${item.End_Time} min<br>` +
-                      `<b>Duration:</b> ${item.End_Time - item.Start_Time} min<extra></extra>`,
-                  }))}
+                  data={scheduleResult.schedule.map((item) => {
+                    // Generate unique color for each job (same logic as main Gantt)
+                    const getJobColor = (jobId) => {
+                      const colors = [
+                        '#1976d2', '#d32f2f', '#388e3c', '#f57c00', '#7b1fa2',
+                        '#0097a7', '#c2185b', '#5d4037', '#455a64', '#e64a19',
+                        '#00796b', '#303f9f', '#c62828', '#6a1b9a', '#0277bd'
+                      ];
+                      let hash = 0;
+                      for (let i = 0; i < jobId.length; i++) {
+                        hash = jobId.charCodeAt(i) + ((hash << 5) - hash);
+                      }
+                      return colors[Math.abs(hash) % colors.length];
+                    };
+                    
+                    return {
+                      x: [item.Start_Time, item.End_Time],
+                      y: [item.Machine_ID, item.Machine_ID],
+                      type: 'scatter',
+                      mode: 'lines',
+                      line: { width: 20, color: getJobColor(item.Job_ID) },
+                      name: `${item.Job_ID} - ${item.Operation_ID}`,
+                      text: `${item.Job_ID}`,
+                      hovertemplate:
+                        `<b>Machine:</b> ${item.Machine_ID}<br>` +
+                        `<b>Job:</b> ${item.Job_ID}<br>` +
+                        `<b>Operation:</b> ${item.Operation_ID}<br>` +
+                        `<b>Start:</b> ${item.Start_Time} min<br>` +
+                        `<b>End:</b> ${item.End_Time} min<br>` +
+                        `<b>Duration:</b> ${item.End_Time - item.Start_Time} min` +
+                        (item.Priority ? `<br><b>Priority:</b> ${item.Priority}` : '') +
+                        `<extra></extra>`,
+                      hoverlabel: {
+                        bgcolor: 'white',
+                        font: { size: 12, color: 'black' }
+                      }
+                    };
+                  })}
                   layout={{
-                    title: `${selectedHeuristic} Schedule - Excel Data`,
+                    title: `${selectedHeuristic} Schedule - Gantt Chart`,
                     xaxis: {
                       title: 'Time (minutes)',
                       showgrid: true,
@@ -835,11 +871,20 @@ function ExcelUpload() {
                       title: 'Machine',
                       autorange: 'reversed',
                     },
-                    height: 500,
+                    height: 600,
                     showlegend: false,
+                    hovermode: 'closest',
+                  }}
+                  config={{
+                    displayModeBar: true,
+                    displaylogo: false,
+                    modeBarButtonsToRemove: ['select2d', 'lasso2d'],
                   }}
                   style={{ width: '100%' }}
                 />
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  <strong>Legend:</strong> Hover over bars to see operation details. Each job has a unique color for easy tracking across machines.
+                </Alert>
               </CardContent>
             </Card>
           )}
@@ -912,7 +957,7 @@ function ExcelUpload() {
             <Box sx={{ mt: 3 }}>
               <Divider sx={{ my: 3 }} />
               <Typography variant="h6" gutterBottom>
-                📊 Heuristics Comparison
+                Heuristics Comparison
               </Typography>
               <TableContainer>
                 <Table>

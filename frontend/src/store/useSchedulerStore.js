@@ -33,6 +33,12 @@ const useSchedulerStore = create(
       
       setMetrics: (metrics) => set({ metrics }),
       
+      addSchedule: (heuristic, schedule, metrics) =>
+        set((state) => ({
+          schedules: { ...state.schedules, [heuristic]: schedule },
+          metrics: { ...state.metrics, [heuristic]: metrics },
+        })),
+      
       setLoading: (loading) => set({ loading }),
       
       setError: (error) => set({ error }),

@@ -87,11 +87,11 @@ function CostAnalysis() {
       setTimeout(async () => {
         try {
           const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
-            prompt: `Analyze this hourly rate vs cost analysis and provide insights on the trade-offs between cost, outsourcing, tardiness, and utilization:\n${JSON.stringify(response.data, null, 2)}`,
+            prompt: `Analyze the hourly rate vs cost analysis results:\n- Identify optimal hourly rate range that balances cost, outsourcing, and tardiness\n- Explain trade-offs between labor cost and schedule performance\n- Highlight key inflection points where cost dramatically impacts outcomes\n- Recommend specific hourly rate based on the analysis\n\nData:\n${JSON.stringify(response.data, null, 2)}`,
             context_data: response.data
           });
           
-          setAiInsights(cleanAIInsights(aiResponse.data.response));
+          setAiInsights(cleanAIInsights(aiResponse.data.insights));
         } catch (error) {
           console.error('Failed to fetch AI insights:', error);
         }
@@ -211,7 +211,7 @@ function CostAnalysis() {
         },
       ],
       layout: {
-        title: '⚠️ Tardiness vs Hourly Rate (The Trade-off)',
+        title: 'Tardiness vs Hourly Rate (The Trade-off)',
         xaxis: { title: 'Hourly Rate ($/hr)' },
         yaxis: { title: 'Total Tardiness (Days)' },
         yaxis2: {
@@ -252,7 +252,7 @@ function CostAnalysis() {
         },
       ],
       layout: {
-        title: '📊 Capacity Utilization & On-Time Performance',
+        title: 'Capacity Utilization & On-Time Performance',
         xaxis: { title: 'Hourly Rate ($/hr)' },
         yaxis: { title: 'Percentage (%)' },
         height: 400,
@@ -340,8 +340,8 @@ function CostAnalysis() {
             </Box>
           )}
 
-          <Alert severity="info" sx={{ mt: 2 }}>
-            💡 <strong>The Trade-off:</strong> Lower hourly rates mean less outsourcing (cheaper in-house). 
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <strong>The Trade-off:</strong> Lower hourly rates mean less outsourcing (cheaper in-house).
             BUT keeping everything in-house at low rates increases machine utilization → capacity constraints → tardiness → late deliveries.
             Higher rates increase outsourcing, reducing load and improving on-time performance.
           </Alert>
@@ -379,7 +379,7 @@ function CostAnalysis() {
           <Card sx={{ mb: 3, bgcolor: '#fff3e0' }}>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                🎯 Key Insight: Cost vs Delivery Trade-off
+                Key Insight: Cost vs Delivery Trade-off
               </Typography>
               <Typography variant="body1">
                 {analysisData.trade_off_insight}
@@ -487,7 +487,7 @@ function CostAnalysis() {
           <Card>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                📊 Detailed Results with Scheduling Metrics
+                Detailed Results with Scheduling Metrics
               </Typography>
               <TableContainer component={Paper}>
                 <Table size="small">

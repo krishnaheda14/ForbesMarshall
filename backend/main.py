@@ -9,6 +9,7 @@ import time
 import os
 from dotenv import load_dotenv
 import google.generativeai as genai
+import requests
 
 # Import scheduling logic from existing file
 import sys
@@ -46,17 +47,34 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Configure Gemini AI
+# Configure AI - OpenRouter with fallback to Gemini
 try:
+    OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    gemini_model = None
+    
+    # Configure Gemini regardless (needed for SchemaMapper)
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-flash-latest')
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    
+    # Prefer OpenRouter for AI insights, but use Gemini for schema mapping
+    if OPENROUTER_API_KEY:
         AI_ENABLED = True
+        AI_PROVIDER = 'openrouter'
+        print(f"AI enabled with OpenRouter (insights) and Gemini (schema mapping: {'Yes' if gemini_model else 'No'})")
+    elif GEMINI_API_KEY:
+        AI_ENABLED = True
+        AI_PROVIDER = 'gemini'
+        print("AI enabled with Gemini (both insights and schema mapping)")
     else:
         AI_ENABLED = False
+        AI_PROVIDER = None
+        print("AI disabled - no API keys found")
 except Exception as e:
     AI_ENABLED = False
+    AI_PROVIDER = None
+    gemini_model = None
     print(f"AI initialization failed: {e}")
 
 # Global state management (in production, use Redis or database)
@@ -222,9 +240,9 @@ def load_all_data(sample_size=None):
     return df_ops, df_machines, df_effective, df_penalties, df_vendors
 
 def get_ai_insights(prompt: str, context_data: Optional[Dict] = None):
-    """Generate AI insights using Gemini"""
+    """Generate AI insights using OpenRouter or Gemini"""
     if not AI_ENABLED:
-        return "AI insights are disabled. Please add GEMINI_API_KEY to your .env file."
+        return "AI insights are disabled. Please add OPENROUTER_API_KEY or GEMINI_API_KEY to your .env file."
     
     try:
         full_prompt = f"""
@@ -245,13 +263,63 @@ This is a CNC job scheduling application with 6 heuristics:
         if context_data:
             full_prompt += f"\n\n**DATA CONTEXT:**\n{context_data}\n"
         
-        full_prompt += "\n\nProvide clear, actionable insights in 3-5 concise bullet points."
+        full_prompt += """\n\n**OUTPUT REQUIREMENTS:**
+Provide 3-5 direct, actionable insights as bullet points.
+- Start immediately with insights (no preamble like "Based on the data" or "Here are the insights")
+- Use proper spacing between bullets for readability
+- Use clear punctuation and complete sentences
+- Focus on specific metrics and values (e.g., "Total Cost: $X" not "cost parameter")
+- Be concise and professional
+- Do not include any meta-commentary about the format"""
         
-        response = gemini_model.generate_content(full_prompt)
-        return response.text
+        # Use OpenRouter if available (better models)
+        if AI_PROVIDER == 'openrouter':
+            response = requests.post(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "anthropic/claude-3.5-sonnet",  # Claude 3.5 Sonnet (paid but working)
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": full_prompt
+                        }
+                    ],
+                    "max_tokens": 1000,
+                    "temperature": 0.7
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
+            else:
+                # Fallback to Gemini if OpenRouter fails
+                if GEMINI_API_KEY and gemini_model:
+                    try:
+                        print("[AI Insights] OpenRouter failed, trying Gemini fallback...")
+                        response = gemini_model.generate_content(full_prompt)
+                        return response.text
+                    except Exception as gemini_error:
+                        return f"Both OpenRouter and Gemini failed. OpenRouter: {response.status_code} - {response.text[:100]}. Gemini: {str(gemini_error)[:100]}"
+                else:
+                    return f"OpenRouter API error: {response.status_code} - {response.text}"
+        
+        # Use Gemini as primary
+        else:
+            if not gemini_model:
+                return "AI insights unavailable: No valid API keys configured"
+            response = gemini_model.generate_content(full_prompt)
+            return response.text
     
     except Exception as e:
-        return f"Error generating AI insights: {str(e)}"
+        error_msg = str(e)
+        if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
+            return "⚠️ Gemini API key is invalid or expired. Please update GEMINI_API_KEY in .env file or use OpenRouter instead."
+        return f"Error generating AI insights: {error_msg}"
 
 # API Endpoints
 
@@ -310,12 +378,29 @@ def get_data_info():
 def get_machine_data():
     """Get machine data including maintenance windows"""
     if state.df_machines is None:
-        raise HTTPException(status_code=400, detail="Data not loaded. Please load data first from the Dashboard.")
+        # Return empty data instead of error to allow graceful handling
+        return {"machines": [], "count": 0, "message": "No data loaded yet"}
     
     try:
-        machines = state.df_machines.to_dict('records')
-        return {"machines": machines, "count": len(machines)}
+        # Convert DataFrame to dict, handling NaN values
+        machines = state.df_machines.fillna('').to_dict('records')
+        
+        # Clean up any remaining NaN or None values
+        cleaned_machines = []
+        for machine in machines:
+            cleaned_machine = {}
+            for key, value in machine.items():
+                if pd.isna(value) or value == 'nan':
+                    cleaned_machine[key] = None
+                else:
+                    cleaned_machine[key] = value
+            cleaned_machines.append(cleaned_machine)
+        
+        return {"machines": cleaned_machines, "count": len(cleaned_machines)}
     except Exception as e:
+        print(f"Error in get_machine_data: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching machine data: {str(e)}")
 
 @app.post("/api/schedule/compute")
@@ -520,7 +605,7 @@ def update_priority(request: PriorityUpdateRequest):
 
 @app.post("/api/outsourcing/policy")
 def update_outsourcing_policy(request: OutsourcingPolicyRequest):
-    """Update outsourcing cost threshold and recompute metrics"""
+    """Update outsourcing cost threshold and recompute all heuristics"""
     if state.df_ops is None:
         raise HTTPException(status_code=400, detail="Data not loaded")
     
@@ -541,28 +626,38 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
         
         new_outsourced = len(state.df_ops[state.df_ops['Assignment_Type'] == 'OUTSOURCE'])
         
-        # Recompute metrics for current heuristic if available
-        if state.current_heuristic and state.schedules.get(state.current_heuristic):
+        # Recompute ALL heuristics that have been computed to update KPIs
+        heuristics_to_recompute = list(state.schedules.keys())
+        recomputed_metrics = {}
+        
+        for heur in heuristics_to_recompute:
             scheduler = CNCScheduler(
-                state.df_jobs, state.df_ops, state.df_machines,
-                state.df_prev_next, state.cost_threshold
+                state.df_ops.copy(),
+                state.df_machines.copy(),
+                state.df_effective.copy(),
+                state.df_penalties.copy()
             )
-            schedule = state.schedules[state.current_heuristic]
-            metrics = scheduler.compute_metrics(schedule)
-            state.metrics[state.current_heuristic] = metrics
+            
+            schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
+            metrics = calculate_metrics(schedule, state.df_ops, heur)
+            
+            state.schedules[heur] = schedule
+            state.metrics[heur] = metrics
+            recomputed_metrics[heur] = metrics
         
         state.activity_log.append({
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'action': 'Outsourcing Policy Updated',
-            'details': f"Threshold: {old_threshold} → {request.cost_threshold}, Outsourced: {new_outsourced}"
+            'details': f"Threshold: {old_threshold} → {request.cost_threshold}, Outsourced: {new_outsourced}, Recomputed: {', '.join(heuristics_to_recompute)}"
         })
         
         return {
             "status": "success",
-            "message": "Outsourcing policy updated and metrics recomputed",
+            "message": f"Outsourcing policy updated. {len(heuristics_to_recompute)} heuristic(s) recomputed with new KPIs.",
             "new_outsourced_count": new_outsourced,
             "total_operations": len(state.df_ops),
-            "metrics": state.metrics.get(state.current_heuristic, {}) if state.current_heuristic else {}
+            "heuristics_recomputed": heuristics_to_recompute,
+            "metrics": recomputed_metrics
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -890,6 +985,7 @@ async def load_excel_and_schedule(
 ):
     """
     Complete workflow: Upload Excel -> Map columns -> Transform -> Schedule
+    ISOLATED from main dashboard - does NOT modify global state
     """
     try:
         import json
@@ -914,7 +1010,7 @@ async def load_excel_and_schedule(
                 detail={"message": "No valid jobs found", "errors": errors}
             )
         
-        # Convert jobs to DataFrame format for scheduler
+        # Convert jobs to DataFrame format for scheduler (TEMPORARY - NOT GLOBAL STATE)
         jobs_data = []
         for job in jobs:
             # Handle due_date - convert datetime to days or use numeric value
@@ -954,58 +1050,56 @@ async def load_excel_and_schedule(
                 'Vendor_Ref': job.vendor_id or '',
             })
         
-        # Load into scheduler state
-        state.df_ops = pd.DataFrame(jobs_data)
-        state.df_ops['Total_Proc_Min'] = state.df_ops['Proc_Time_per_Unit'] * state.df_ops['Quantity']
-        print(f"[Excel Schedule] Created operations dataframe with {len(state.df_ops)} rows")
+        # Load into scheduler state (TEMPORARY COPIES - DO NOT MODIFY GLOBAL STATE)
+        excel_df_ops = pd.DataFrame(jobs_data)
+        excel_df_ops['Total_Proc_Min'] = excel_df_ops['Proc_Time_per_Unit'] * excel_df_ops['Quantity']
+        print(f"[Excel Schedule] Created operations dataframe with {len(excel_df_ops)} rows")
         
-        # Load other required data if not already loaded
-        if state.df_machines is None:
-            # Load all supporting data files
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            data_dir = os.path.join(base_dir, 'data')
-            
-            print(f"[Excel Schedule] Loading data from {data_dir}")
-            
-            state.df_machines = pd.read_csv(os.path.join(data_dir, 'machine_data.csv'))
-            state.df_vendors = pd.read_csv(os.path.join(data_dir, 'vendor_data.csv'))
-            state.df_penalties = pd.read_csv(os.path.join(data_dir, 'previous_next_material.csv'))
-            
-            # Normalize column names
-            state.df_machines.columns = state.df_machines.columns.str.replace(' ', '_')
-            state.df_vendors.columns = state.df_vendors.columns.str.replace(' ', '_')
-            state.df_penalties.columns = state.df_penalties.columns.str.replace(' ', '_')
-            
-            # Process Speed_Factor safely
-            if 'Speed_Factor' not in state.df_machines.columns and 'SpeedFactor' in state.df_machines.columns:
-                state.df_machines.rename(columns={'SpeedFactor': 'Speed_Factor'}, inplace=True)
-            
-            if 'Speed_Factor' in state.df_machines.columns:
-                state.df_machines['Speed_Factor'] = (
-                    state.df_machines['Speed_Factor']
-                    .astype(str)
-                    .str.extract(r'([0-9]*\.?[0-9]+)', expand=False)
-                    .fillna('1.0')
-                    .astype(float)
-                )
-            else:
-                # Default speed factor if column doesn't exist
-                state.df_machines['Speed_Factor'] = 1.0
-            
-            # Parse maintenance windows
-            maintenance_col = 'Scheduled_Maintenance_(Day,_Time-Time)'
-            if maintenance_col in state.df_machines.columns:
-                state.df_machines['Maintenance_Window'] = state.df_machines[maintenance_col].apply(parse_maintenance)
-            
-            print(f"[Excel Schedule] Loaded {len(state.df_machines)} machines")
+        # Load supporting data files (TEMPORARY - DO NOT MODIFY GLOBAL STATE)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base_dir, 'data')
+        
+        print(f"[Excel Schedule] Loading data from {data_dir}")
+        
+        excel_df_machines = pd.read_csv(os.path.join(data_dir, 'machine_data.csv'))
+        excel_df_vendors = pd.read_csv(os.path.join(data_dir, 'vendor_data.csv'))
+        excel_df_penalties = pd.read_csv(os.path.join(data_dir, 'previous_next_material.csv'))
+        
+        # Normalize column names
+        excel_df_machines.columns = excel_df_machines.columns.str.replace(' ', '_')
+        excel_df_vendors.columns = excel_df_vendors.columns.str.replace(' ', '_')
+        excel_df_penalties.columns = excel_df_penalties.columns.str.replace(' ', '_')
+        
+        # Process Speed_Factor safely
+        if 'Speed_Factor' not in excel_df_machines.columns and 'SpeedFactor' in excel_df_machines.columns:
+            excel_df_machines.rename(columns={'SpeedFactor': 'Speed_Factor'}, inplace=True)
+        
+        if 'Speed_Factor' in excel_df_machines.columns:
+            excel_df_machines['Speed_Factor'] = (
+                excel_df_machines['Speed_Factor']
+                .astype(str)
+                .str.extract(r'([0-9]*\.?[0-9]+)', expand=False)
+                .fillna('1.0')
+                .astype(float)
+            )
+        else:
+            # Default speed factor if column doesn't exist
+            excel_df_machines['Speed_Factor'] = 1.0
+        
+        # Parse maintenance windows
+        maintenance_col = 'Scheduled_Maintenance_(Day,_Time-Time)'
+        if maintenance_col in excel_df_machines.columns:
+            excel_df_machines['Maintenance_Window'] = excel_df_machines[maintenance_col].apply(parse_maintenance)
+        
+        print(f"[Excel Schedule] Loaded {len(excel_df_machines)} machines")
         
         # Calculate effective times for Excel jobs
         effective_times = []
-        for idx, op in state.df_ops.iterrows():
+        for idx, op in excel_df_ops.iterrows():
             op_type = op.get('Op_Type', 'MILLING')
             eligible_machines = get_eligible_machines(op_type)
             for machine_id in eligible_machines:
-                machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id]
+                machine_row = excel_df_machines[excel_df_machines['Machine_ID'] == machine_id]
                 if len(machine_row) > 0:
                     speed_factor = machine_row.iloc[0]['Speed_Factor']
                     effective_proc_time = op['Total_Proc_Min'] / speed_factor
@@ -1017,22 +1111,22 @@ async def load_excel_and_schedule(
                         'Total_Time': total_time
                     })
         
-        state.df_effective = pd.DataFrame(effective_times)
-        print(f"[Excel Schedule] Calculated {len(state.df_effective)} effective time entries")
+        excel_df_effective = pd.DataFrame(effective_times)
+        print(f"[Excel Schedule] Calculated {len(excel_df_effective)} effective time entries")
         
-        if state.df_effective.empty:
+        if excel_df_effective.empty:
             raise HTTPException(
                 status_code=500,
                 detail="No eligible machines found for any operations. Check operation types and machine capabilities."
             )
         
-        # Run scheduling with selected heuristic
+        # Run scheduling with selected heuristic (ISOLATED - NO GLOBAL STATE MODIFICATION)
         print(f"[Excel Schedule] Starting scheduler with {heuristic}")
         scheduler = CNCScheduler(
-            df_ops=state.df_ops,
-            df_machines=state.df_machines,
-            df_effective=state.df_effective,
-            df_penalties=state.df_penalties
+            df_ops=excel_df_ops,
+            df_machines=excel_df_machines,
+            df_effective=excel_df_effective,
+            df_penalties=excel_df_penalties
         )
         
         schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
@@ -1051,18 +1145,16 @@ async def load_excel_and_schedule(
                 detail="Scheduling failed: Unable to generate schedule. Please check if operations have valid machine assignments."
             )
         
-        # Calculate metrics
-        metrics = calculate_metrics(schedule, state.df_ops, heuristic)
+        # Calculate metrics (ISOLATED - NO GLOBAL STATE MODIFICATION)
+        metrics = calculate_metrics(schedule, excel_df_ops, heuristic)
         print(f"[Excel Schedule] Metrics calculated: {metrics}")
         
-        # Store in state
-        state.schedules[heuristic] = schedule
-        state.metrics[heuristic] = metrics
-        state.current_heuristic = heuristic
+        # DO NOT store in global state - Excel upload is completely isolated
+        # This keeps Dashboard data and Excel data separate
         
         return {
             "status": "success",
-            "message": f"Scheduled {len(jobs)} jobs using {heuristic}",
+            "message": f"Scheduled {len(jobs)} jobs using {heuristic} (Excel data - isolated from Dashboard)",
             "job_count": len(jobs),
             "heuristic": heuristic,
             "schedule": schedule.to_dict('records'),
