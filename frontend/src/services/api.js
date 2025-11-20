@@ -27,13 +27,27 @@ api.interceptors.response.use(
   (response) => {
     const duration = new Date().getTime() - response.config.metadata.startTime;
     
+    // Handle different request data types
+    let requestData = null;
+    if (response.config.data) {
+      if (response.config.data instanceof FormData) {
+        requestData = { type: 'FormData', note: 'File upload or form data' };
+      } else {
+        try {
+          requestData = JSON.parse(response.config.data);
+        } catch {
+          requestData = response.config.data;
+        }
+      }
+    }
+    
     logAPICall({
       method: response.config.method.toUpperCase(),
       url: response.config.url,
       status: response.status,
       duration: duration,
       timestamp: new Date().getTime(),
-      request: response.config.data ? JSON.parse(response.config.data) : null,
+      request: requestData,
       response: response.data,
     });
     
@@ -44,13 +58,27 @@ api.interceptors.response.use(
       ? new Date().getTime() - error.config.metadata.startTime 
       : 0;
     
+    // Handle different request data types for errors
+    let requestData = null;
+    if (error.config?.data) {
+      if (error.config.data instanceof FormData) {
+        requestData = { type: 'FormData', note: 'File upload or form data' };
+      } else {
+        try {
+          requestData = JSON.parse(error.config.data);
+        } catch {
+          requestData = error.config.data;
+        }
+      }
+    }
+    
     logAPICall({
       method: error.config?.method?.toUpperCase() || 'UNKNOWN',
       url: error.config?.url || 'UNKNOWN',
       status: error.response?.status || 0,
       duration: duration,
       timestamp: new Date().getTime(),
-      request: error.config?.data ? JSON.parse(error.config.data) : null,
+      request: requestData,
       response: error.response?.data || null,
       error: error.response?.data?.detail || error.message,
     });

@@ -226,8 +226,20 @@ function ExcelUpload() {
       }, 500);
       
     } catch (error) {
-      enqueueSnackbar(`Scheduling failed: ${error.response?.data?.detail || error.message}`, { 
-        variant: 'error' 
+      console.error('Scheduling error:', error);
+      
+      let errorMessage = 'Scheduling failed';
+      if (error.response?.data?.detail) {
+        errorMessage = typeof error.response.data.detail === 'string' 
+          ? error.response.data.detail 
+          : JSON.stringify(error.response.data.detail);
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      enqueueSnackbar(errorMessage, { 
+        variant: 'error',
+        autoHideDuration: 10000
       });
     } finally {
       setLoading(false);
@@ -511,6 +523,17 @@ function ExcelUpload() {
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               Choose a scheduling algorithm to compute optimal job sequences:
             </Typography>
+            
+            {loading && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <CircularProgress size={20} />
+                  <Typography variant="body2">
+                    Processing your data and running scheduling algorithm... This may take a few moments.
+                  </Typography>
+                </Box>
+              </Alert>
+            )}
             
             <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
               <Button

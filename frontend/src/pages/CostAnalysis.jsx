@@ -22,7 +22,7 @@ import {
   MenuItem,
   Grid,
 } from '@mui/material';
-import { Refresh as RefreshIcon, AttachMoney as CostIcon } from '@mui/icons-material';
+import { Refresh as RefreshIcon, AttachMoney as CostIcon, Psychology as AIIcon } from '@mui/icons-material';
 import Plot from 'react-plotly.js';
 import { useSnackbar } from 'notistack';
 import axios from 'axios';
@@ -34,26 +34,79 @@ function CostAnalysis() {
   const [loading, setLoading] = useState(false);
   const [heuristic, setHeuristic] = useState('SPT');
   const [analysisData, setAnalysisData] = useState(null);
+  const [aiInsights, setAiInsights] = useState('');
+  const [loadingProgress, setLoadingProgress] = useState(0);
 
   const hourlyRates = [20, 25, 30, 35, 40, 45, 50, 60, 70, 80];
 
+  const cleanAIInsights = (text) => {
+    if (!text) return '';
+    
+    let cleaned = text;
+    
+    // Remove markdown tables (lines with | characters)
+    cleaned = cleaned.split('\n')
+      .filter(line => !line.trim().startsWith('|') && !line.includes('---|'))
+      .join('\n');
+    
+    // Remove ** bold markers
+    cleaned = cleaned.replace(/\*\*/g, '');
+    
+    // Remove extra blank lines (more than 1 consecutive)
+    cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
+    
+    // Remove leading/trailing whitespace
+    cleaned = cleaned.trim();
+    
+    return cleaned;
+  };
+
   const handleAnalyze = async () => {
     setLoading(true);
+    setLoadingProgress(0);
+    setAiInsights('');
+    
     try {
+      // Simulate progress updates
+      const progressInterval = setInterval(() => {
+        setLoadingProgress(prev => Math.min(prev + 10, 90));
+      }, 300);
+
       const response = await axios.post(`${API_BASE}/api/analysis/hourly-cost`, {
         heuristic: heuristic,
         hourly_rates: hourlyRates
       });
       
+      clearInterval(progressInterval);
+      setLoadingProgress(100);
+      
       setAnalysisData(response.data);
       enqueueSnackbar('Cost analysis completed!', { variant: 'success' });
+
+      // Auto-fetch AI insights
+      setTimeout(async () => {
+        try {
+          const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
+            prompt: `Analyze this hourly rate vs cost analysis and provide insights on the trade-offs between cost, outsourcing, tardiness, and utilization:\n${JSON.stringify(response.data, null, 2)}`,
+            context_data: response.data
+          });
+          
+          setAiInsights(cleanAIInsights(aiResponse.data.response));
+        } catch (error) {
+          console.error('Failed to fetch AI insights:', error);
+        }
+      }, 500);
+      
     } catch (error) {
       enqueueSnackbar(
         `Error: ${error.response?.data?.detail || error.message}`,
         { variant: 'error' }
       );
     } finally {
-      setLoading(false);
+      setTimeout(() => {
+        setLoading(false);
+        setLoadingProgress(0);
+      }, 500);
     }
   };
 
@@ -248,6 +301,45 @@ function CostAnalysis() {
             </Grid>
           </Grid>
 
+          {/* Loading Progress Bar */}
+          {loading && (
+            <Box sx={{ mt: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                <Box sx={{ width: '100%', mr: 1 }}>
+                  <Box
+                    sx={{
+                      height: 8,
+                      borderRadius: 4,
+                      bgcolor: '#e0e0e0',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        height: '100%',
+                        borderRadius: 4,
+                        bgcolor: '#1976d2',
+                        width: `${loadingProgress}%`,
+                        transition: 'width 0.3s ease',
+                      }}
+                    />
+                  </Box>
+                </Box>
+                <Box sx={{ minWidth: 35 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    {`${loadingProgress}%`}
+                  </Typography>
+                </Box>
+              </Box>
+              <Typography variant="caption" color="text.secondary">
+                {loadingProgress < 30 ? 'Initializing analysis...' : 
+                 loadingProgress < 60 ? 'Running scheduling simulations...' : 
+                 loadingProgress < 90 ? 'Calculating metrics...' : 
+                 'Finalizing results...'}
+              </Typography>
+            </Box>
+          )}
+
           <Alert severity="info" sx={{ mt: 2 }}>
             💡 <strong>The Trade-off:</strong> Lower hourly rates mean less outsourcing (cheaper in-house). 
             BUT keeping everything in-house at low rates increases machine utilization → capacity constraints → tardiness → late deliveries.
@@ -258,6 +350,31 @@ function CostAnalysis() {
 
       {analysisData && (
         <>
+          {/* AI Insights Panel */}
+          {aiInsights && (
+            <Card sx={{ mb: 3, background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <AIIcon sx={{ color: 'white', fontSize: 28 }} />
+                  <Typography variant="h6" sx={{ color: 'white', fontWeight: 'bold' }}>
+                    ✨ AI Insights & Recommendations
+                  </Typography>
+                </Box>
+                <Box sx={{ 
+                  backgroundColor: 'rgba(255,255,255,0.95)', 
+                  p: 2, 
+                  borderRadius: 2,
+                  maxHeight: '400px',
+                  overflowY: 'auto'
+                }}>
+                  <Typography variant="body1" sx={{ whiteSpace: 'pre-line', lineHeight: 1.6 }}>
+                    {aiInsights}
+                  </Typography>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Trade-off Insight */}
           <Card sx={{ mb: 3, bgcolor: '#fff3e0' }}>
             <CardContent>

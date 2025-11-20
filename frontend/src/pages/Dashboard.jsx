@@ -10,14 +10,17 @@ import {
   Box,
   CircularProgress,
   Alert,
+  Chip,
 } from '@mui/material';
 import {
   CloudUpload as LoadIcon,
   Insights as AIIcon,
+  CheckCircle as CheckIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import useSchedulerStore from '../store/useSchedulerStore';
-import { loadData, getCurrentSchedule, getAIInsights } from '../services/api';
+import { loadData, getCurrentSchedule, getAIInsights, getDataInfo } from '../services/api';
 import KPICards from '../components/KPICards';
 import AIInsightsPanel from '../components/AIInsightsPanel';
 
@@ -31,23 +34,73 @@ function Dashboard() {
     setCurrentSchedule,
     loading,
     setLoading,
+    metrics,
   } = useSchedulerStore();
 
   const [aiInsights, setAiInsights] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
 
+  // Check if data is already loaded on mount
+  useEffect(() => {
+    checkDataStatus();
+  }, []);
+
+  // Auto-fetch schedule when heuristic changes
   useEffect(() => {
     if (currentHeuristic && !currentSchedule) {
       fetchCurrentSchedule();
     }
   }, [currentHeuristic]);
 
+  // Auto-fetch AI insights when heuristic is applied
+  useEffect(() => {
+    if (currentHeuristic && currentSchedule && !aiInsights) {
+      autoFetchAIInsights();
+    }
+  }, [currentHeuristic, currentSchedule]);
+
+  const checkDataStatus = async () => {
+    try {
+      const result = await getDataInfo();
+      if (result.operations_count > 0) {
+        setDataLoaded(true, {
+          operations: result.operations_count,
+          machines: result.machines_count,
+          jobs: result.jobs_count
+        });
+      }
+    } catch (error) {
+      // Data not loaded yet, that's fine
+    }
+  };
+
   const fetchCurrentSchedule = async () => {
     try {
       const result = await getCurrentSchedule();
-      setCurrentSchedule(result.schedule);
+      if (result.schedule && result.schedule.length > 0) {
+        setCurrentSchedule(result.schedule);
+      }
     } catch (error) {
       // Expected if no schedule computed yet
+    }
+  };
+
+  const autoFetchAIInsights = async () => {
+    try {
+      setLoadingAI(true);
+      const currentMetrics = metrics[currentHeuristic] || {};
+      const prompt = `Analyze the ${currentHeuristic} scheduling heuristic performance and provide insights:\n- Makespan: ${currentMetrics.Makespan_Days || 'N/A'} days\n- Tardiness: ${currentMetrics.Total_Tardiness_Days || 'N/A'} days\n- Utilization: ${currentMetrics['Machine_Utilization_%'] || 'N/A'}%\n- On-Time: ${currentMetrics['On_Time_%'] || 'N/A'}%\n\nProvide: 1) Performance analysis, 2) Bottlenecks, 3) Recommendations`;
+      
+      const result = await getAIInsights(prompt, {
+        heuristic: currentHeuristic,
+        metrics: currentMetrics
+      });
+      
+      setAiInsights(result.insights);
+    } catch (error) {
+      console.error('Failed to fetch AI insights:', error);
+    } finally {
+      setLoadingAI(false);
     }
   };
 
@@ -69,32 +122,9 @@ function Dashboard() {
     }
   };
 
-  const handleGetAIInsights = async () => {
-    if (!currentSchedule || !currentHeuristic) {
-      enqueueSnackbar('Please compute and apply a heuristic first', {
-        variant: 'warning',
-      });
-      return;
-    }
-
-    try {
-      setLoadingAI(true);
-      const prompt = `Analyze the performance of the ${currentHeuristic} heuristic and provide optimization recommendations.`;
-      
-      const result = await getAIInsights(prompt, {
-        heuristic: currentHeuristic,
-        schedule_size: currentSchedule.length,
-      });
-      
-      setAiInsights(result.insights);
-      enqueueSnackbar('AI insights generated!', { variant: 'success' });
-    } catch (error) {
-      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
-        variant: 'error',
-      });
-    } finally {
-      setLoadingAI(false);
-    }
+  const handleRefreshInsights = async () => {
+    setAiInsights(null);
+    await autoFetchAIInsights();
   };
 
   return (
@@ -128,31 +158,96 @@ function Dashboard() {
         </Card>
       ) : (
         <>
+          {/* Dataset Loaded Status Card */}
+          <Card sx={{ mb: 3, bgcolor: 'success.light' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box display="flex" alignItems="center" gap={2}>
+                  <CheckIcon sx={{ fontSize: 40, color: 'success.dark' }} />
+                  <Box>
+                    <Typography variant="h6" sx={{ color: 'success.dark' }}>
+                      Dataset Loaded Successfully
+                    </Typography>
+                    <Box display="flex" gap={1} mt={1}>
+                      <Chip 
+                        label={`${useSchedulerStore.getState().dataStats?.operations || 0} Operations`} 
+                        size="small" 
+                        color="success"
+                      />
+                      <Chip 
+                        label={`${useSchedulerStore.getState().dataStats?.machines || 0} Machines`} 
+                        size="small" 
+                        color="success"
+                      />
+                      <Chip 
+                        label={`${useSchedulerStore.getState().dataStats?.jobs || 0} Jobs`} 
+                        size="small" 
+                        color="success"
+                      />
+                    </Box>
+                  </Box>
+                </Box>
+                <Button
+                  variant="outlined"
+                  color="success"
+                  startIcon={<RefreshIcon />}
+                  onClick={handleLoadData}
+                  disabled={loading}
+                >
+                  Reload Dataset
+                </Button>
+              </Box>
+            </CardContent>
+          </Card>
+
           {!currentHeuristic ? (
             <Alert severity="info" sx={{ mb: 3 }}>
               Select a heuristic from the sidebar and click "Compute All Heuristics" to get started.
             </Alert>
           ) : (
             <>
-              <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="h6">
-                  Active Heuristic: <strong>{currentHeuristic}</strong>
-                </Typography>
-                <Button
-                  variant="outlined"
-                  startIcon={loadingAI ? <CircularProgress size={16} /> : <AIIcon />}
-                  onClick={handleGetAIInsights}
-                  disabled={loadingAI}
-                >
-                  {loadingAI ? 'Analyzing...' : 'Get AI Insights'}
-                </Button>
+              <Box sx={{ mb: 3 }}>
+                <Card>
+                  <CardContent>
+                    <Typography variant="h6">
+                      Active Heuristic: <strong>{currentHeuristic}</strong>
+                    </Typography>
+                    {loadingAI && (
+                      <Box display="flex" alignItems="center" gap={1} mt={1}>
+                        <CircularProgress size={16} />
+                        <Typography variant="body2" color="text.secondary">
+                          Generating AI insights...
+                        </Typography>
+                      </Box>
+                    )}
+                  </CardContent>
+                </Card>
               </Box>
 
-              {aiInsights && (
-                <AIInsightsPanel insights={aiInsights} onClose={() => setAiInsights(null)} />
-              )}
-
               <KPICards />
+
+              {aiInsights && (
+                <Box sx={{ mt: 3 }}>
+                  <Card>
+                    <CardContent>
+                      <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
+                        <Box display="flex" alignItems="center" gap={1}>
+                          <AIIcon color="primary" />
+                          <Typography variant="h6">AI Insights</Typography>
+                        </Box>
+                        <Button
+                          size="small"
+                          onClick={handleRefreshInsights}
+                          disabled={loadingAI}
+                        >
+                          Refresh Insights
+                        </Button>
+                      </Box>
+                      <AIInsightsPanel insights={aiInsights} />
+                    </CardContent>
+                  </Card>
+                </Box>
+              )}
 
               <Grid container spacing={3} sx={{ mt: 2 }}>
                 <Grid item xs={12}>

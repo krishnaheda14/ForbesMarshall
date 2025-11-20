@@ -413,11 +413,17 @@ class CNCScheduler:
         """Run scheduling algorithm"""
         self.reset()
         
-        outsourced_ops = self.df_ops[self.df_ops.get('Assignment_Type', 'IN_HOUSE') == 'OUTSOURCE']
+        # Handle Assignment_Type column safely
+        if 'Assignment_Type' in self.df_ops.columns:
+            outsourced_ops = self.df_ops[self.df_ops['Assignment_Type'] == 'OUTSOURCE']
+            non_outsourced = self.df_ops[self.df_ops['Assignment_Type'] != 'OUTSOURCE']
+        else:
+            outsourced_ops = self.df_ops[self.df_ops.index < 0]  # Empty DataFrame
+            non_outsourced = self.df_ops.copy()
+        
         for _, op in outsourced_ops.iterrows():
             self.op_completion_times[op['Operation_ID']] = 0
 
-        non_outsourced = self.df_ops[self.df_ops.get('Assignment_Type', 'IN_HOUSE') != 'OUTSOURCE']
         operations_count = len(non_outsourced)
         scheduled_ops_set = set()
 

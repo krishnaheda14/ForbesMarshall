@@ -895,13 +895,18 @@ async def load_excel_and_schedule(
         import json
         mappings_dict = json.loads(mappings)
         
+        print(f"[Excel Schedule] Starting with heuristic: {heuristic}")
+        print(f"[Excel Schedule] Mappings: {mappings_dict}")
+        
         # Parse sheet
         await excel_ingestor.parse_sheet(file, sheet_name)
         df = excel_ingestor.get_dataframe()
+        print(f"[Excel Schedule] Parsed {len(df)} rows from Excel")
         
         # Transform to canonical jobs
         transformer = DataTransformer()
         jobs, errors, warnings = transformer.transform(df, mappings_dict)
+        print(f"[Excel Schedule] Transformed to {len(jobs)} jobs, {len(errors)} errors, {len(warnings)} warnings")
         
         if len(jobs) == 0:
             raise HTTPException(
@@ -936,6 +941,7 @@ async def load_excel_and_schedule(
                 'Proc_Time_per_Unit': job.processing_time,
                 'Setup_Time': job.setup_time or 0,
                 'Due_Day': due_day,
+                'Due_Time_Min': due_day * 480,  # Convert days to minutes
                 'Priority': priority,
                 'Mat_Type': job.material_type or 'STEEL',
                 'Tool_Group': job.tool_group or 'TGA',
@@ -943,6 +949,7 @@ async def load_excel_and_schedule(
                 'Part_Type': job.part_type or 'A',
                 'Transfer_Min': 5,
                 'Release_Day': 0,
+                'Release_Time_Min': 0,  # Available immediately
                 'Outsource_Flag': 'Y' if job.can_outsource else 'N',
                 'Vendor_Ref': job.vendor_id or '',
             })
@@ -950,12 +957,15 @@ async def load_excel_and_schedule(
         # Load into scheduler state
         state.df_ops = pd.DataFrame(jobs_data)
         state.df_ops['Total_Proc_Min'] = state.df_ops['Proc_Time_per_Unit'] * state.df_ops['Quantity']
+        print(f"[Excel Schedule] Created operations dataframe with {len(state.df_ops)} rows")
         
         # Load other required data if not already loaded
         if state.df_machines is None:
             # Load all supporting data files
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             data_dir = os.path.join(base_dir, 'data')
+            
+            print(f"[Excel Schedule] Loading data from {data_dir}")
             
             state.df_machines = pd.read_csv(os.path.join(data_dir, 'machine_data.csv'))
             state.df_vendors = pd.read_csv(os.path.join(data_dir, 'vendor_data.csv'))
@@ -966,21 +976,28 @@ async def load_excel_and_schedule(
             state.df_vendors.columns = state.df_vendors.columns.str.replace(' ', '_')
             state.df_penalties.columns = state.df_penalties.columns.str.replace(' ', '_')
             
-            # Process Speed_Factor
+            # Process Speed_Factor safely
             if 'Speed_Factor' not in state.df_machines.columns and 'SpeedFactor' in state.df_machines.columns:
                 state.df_machines.rename(columns={'SpeedFactor': 'Speed_Factor'}, inplace=True)
             
-            state.df_machines['Speed_Factor'] = (
-                state.df_machines['Speed_Factor']
-                .astype(str)
-                .str.extract(r'([0-9]*\.?[0-9]+)')
-                .astype(float)
-            )
+            if 'Speed_Factor' in state.df_machines.columns:
+                state.df_machines['Speed_Factor'] = (
+                    state.df_machines['Speed_Factor']
+                    .astype(str)
+                    .str.extract(r'([0-9]*\.?[0-9]+)', expand=False)
+                    .fillna('1.0')
+                    .astype(float)
+                )
+            else:
+                # Default speed factor if column doesn't exist
+                state.df_machines['Speed_Factor'] = 1.0
             
             # Parse maintenance windows
             maintenance_col = 'Scheduled_Maintenance_(Day,_Time-Time)'
             if maintenance_col in state.df_machines.columns:
                 state.df_machines['Maintenance_Window'] = state.df_machines[maintenance_col].apply(parse_maintenance)
+            
+            print(f"[Excel Schedule] Loaded {len(state.df_machines)} machines")
         
         # Calculate effective times for Excel jobs
         effective_times = []
@@ -999,9 +1016,18 @@ async def load_excel_and_schedule(
                         'Effective_Proc_Time': effective_proc_time,
                         'Total_Time': total_time
                     })
+        
         state.df_effective = pd.DataFrame(effective_times)
+        print(f"[Excel Schedule] Calculated {len(state.df_effective)} effective time entries")
+        
+        if state.df_effective.empty:
+            raise HTTPException(
+                status_code=500,
+                detail="No eligible machines found for any operations. Check operation types and machine capabilities."
+            )
         
         # Run scheduling with selected heuristic
+        print(f"[Excel Schedule] Starting scheduler with {heuristic}")
         scheduler = CNCScheduler(
             df_ops=state.df_ops,
             df_machines=state.df_machines,
@@ -1010,9 +1036,24 @@ async def load_excel_and_schedule(
         )
         
         schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
+        print(f"[Excel Schedule] Scheduling complete, type: {type(schedule)}, shape: {schedule.shape if hasattr(schedule, 'shape') else 'N/A'}")
+        
+        # Handle case where scheduler returns False or invalid data
+        if schedule is False or schedule is None:
+            raise HTTPException(
+                status_code=500, 
+                detail="Scheduling failed: Scheduler returned no valid schedule. Check that operations can be assigned to available machines."
+            )
+        
+        if not isinstance(schedule, pd.DataFrame) or schedule.empty:
+            raise HTTPException(
+                status_code=500, 
+                detail="Scheduling failed: Unable to generate schedule. Please check if operations have valid machine assignments."
+            )
         
         # Calculate metrics
-        metrics = calculate_metrics(schedule, state.df_machines)
+        metrics = calculate_metrics(schedule, state.df_ops, heuristic)
+        print(f"[Excel Schedule] Metrics calculated: {metrics}")
         
         # Store in state
         state.schedules[heuristic] = schedule
@@ -1033,7 +1074,10 @@ async def load_excel_and_schedule(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"[Excel Schedule ERROR] {error_trace}")
+        raise HTTPException(status_code=500, detail=f"Scheduling error: {str(e)}")
 
 
 if __name__ == "__main__":
