@@ -9,6 +9,8 @@ from typing import Dict, List, Any, Optional, Tuple
 import re
 import google.generativeai as genai
 import json
+import requests
+import os
 
 
 class SchemaMapper:
@@ -40,9 +42,11 @@ class SchemaMapper:
         'ignore': 'Column to skip/ignore'
     }
     
-    def __init__(self, gemini_model=None):
-        """Initialize with optional Gemini AI model"""
+    def __init__(self, gemini_model=None, openrouter_api_key=None, use_openrouter=False):
+        """Initialize with optional Gemini AI model or OpenRouter API key"""
         self.gemini_model = gemini_model
+        self.openrouter_api_key = openrouter_api_key
+        self.use_openrouter = use_openrouter
         
     def map_heuristic(self, columns_info: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """
@@ -106,7 +110,7 @@ class SchemaMapper:
         sample_rows: Optional[List[Dict]] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
-        LLM-based mapping using Gemini AI
+        LLM-based mapping using OpenRouter (Claude) or Gemini AI
         
         Args:
             columns_info: Column metadata
@@ -115,20 +119,54 @@ class SchemaMapper:
         Returns:
             Dict mapping column names to {field, confidence, reasoning}
         """
-        if not self.gemini_model:
-            print("[SchemaMapper] No Gemini model available, skipping LLM mapping")
+        # Check if we have either API available
+        if not self.use_openrouter and not self.gemini_model:
+            print("[SchemaMapper] No AI model available, skipping LLM mapping")
             return {}
         
         try:
             # Build prompt
             prompt = self._build_llm_prompt(columns_info, sample_rows)
             
-            # Call Gemini
-            print("[SchemaMapper] Calling Gemini API for column mapping...")
-            response = self.gemini_model.generate_content(prompt)
-            
-            # Parse JSON response
-            response_text = response.text.strip()
+            # Use OpenRouter (Claude) if available and preferred
+            if self.use_openrouter and self.openrouter_api_key:
+                print("[SchemaMapper] Calling OpenRouter (Claude 3.5 Sonnet) for column mapping...")
+                response = requests.post(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.openrouter_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "anthropic/claude-3.5-sonnet",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        "max_tokens": 2000,
+                        "temperature": 0.3
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    response_text = result['choices'][0]['message']['content'].strip()
+                else:
+                    # Fallback to Gemini if OpenRouter fails
+                    if self.gemini_model:
+                        print(f"[SchemaMapper] OpenRouter failed ({response.status_code}), trying Gemini...")
+                        response_obj = self.gemini_model.generate_content(prompt)
+                        response_text = response_obj.text.strip()
+                    else:
+                        print(f"[SchemaMapper] OpenRouter API error: {response.status_code} - {response.text}")
+                        return {}
+            else:
+                # Use Gemini
+                print("[SchemaMapper] Calling Gemini API for column mapping...")
+                response = self.gemini_model.generate_content(prompt)
+                response_text = response.text.strip()
             
             # Extract JSON from markdown code blocks if present
             if '```json' in response_text:

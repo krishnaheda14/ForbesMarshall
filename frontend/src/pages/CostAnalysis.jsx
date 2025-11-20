@@ -87,7 +87,7 @@ function CostAnalysis() {
       setTimeout(async () => {
         try {
           const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
-            prompt: `Analyze the hourly rate vs cost analysis results:\n- Identify optimal hourly rate range that balances cost, outsourcing, and tardiness\n- Explain trade-offs between labor cost and schedule performance\n- Highlight key inflection points where cost dramatically impacts outcomes\n- Recommend specific hourly rate based on the analysis\n\nData:\n${JSON.stringify(response.data, null, 2)}`,
+            prompt: `Analyze the hourly rate vs cost analysis and outsourcing patterns:\n- Identify optimal hourly rate range that balances cost, outsourcing, and tardiness\n- Explain why specific operation types are outsourced (based on savings data)\n- Evaluate if frequent outsourcing of certain jobs indicates capacity gaps or missing capabilities\n- Highlight key inflection points where cost dramatically impacts outcomes\n- Recommend specific hourly rate and whether to invest in expanding in-house capabilities vs continuing outsourcing\n- Suggest improvements to reduce outsourcing dependency if beneficial\n\nData:\n${JSON.stringify(response.data, null, 2)}`,
             context_data: response.data
           });
           
@@ -284,6 +284,8 @@ function CostAnalysis() {
                   <MenuItem value="EDD">EDD - Earliest Due Date</MenuItem>
                   <MenuItem value="CR">CR - Critical Ratio</MenuItem>
                   <MenuItem value="PRIORITY">PRIORITY - Priority Based</MenuItem>
+                  <MenuItem value="WEIGHTED">WEIGHTED - Balanced Multi-Objective</MenuItem>
+                  <MenuItem value="SLACK">SLACK - Minimum Slack Time</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
@@ -482,6 +484,218 @@ function CostAnalysis() {
               </Card>
             </Grid>
           </Grid>
+
+          {/* Outsourcing Analytics Section */}
+          {analysisData.outsourcing_analytics && (
+            <Card sx={{ mb: 3, border: '2px solid #1976d2' }}>
+              <CardContent>
+                <Typography variant="h5" gutterBottom sx={{ color: '#1976d2', fontWeight: 'bold' }}>
+                  📦 Outsourcing Analysis & Insights
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+                  Understanding which operations are outsourced, why, and what can be improved
+                </Typography>
+
+                <Grid container spacing={3}>
+                  {/* Root Causes & Issues */}
+                  <Grid item xs={12}>
+                    <Card sx={{ bgcolor: '#fff3cd', border: '1px solid #ffc107' }}>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <span>⚠️</span> Root Causes of Outsourcing
+                        </Typography>
+                        {analysisData.outsourcing_analytics.root_causes.length > 0 ? (
+                          <Box component="ul" sx={{ pl: 2, mb: 0 }}>
+                            {analysisData.outsourcing_analytics.root_causes.map((cause, idx) => (
+                              <li key={idx}>
+                                <Typography variant="body1" sx={{ mb: 1 }}>
+                                  {cause}
+                                </Typography>
+                              </li>
+                            ))}
+                          </Box>
+                        ) : (
+                          <Typography variant="body1">No outsourcing patterns detected</Typography>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+
+                  {/* Most Outsourced Operation Types */}
+                  <Grid item xs={12} md={6}>
+                    <Card sx={{ height: '100%' }}>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          🔧 Most Outsourced Operation Types
+                        </Typography>
+                        {analysisData.outsourcing_analytics.most_outsourced_operation_types.length > 0 ? (
+                          <TableContainer>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell><strong>Operation Type</strong></TableCell>
+                                  <TableCell align="right"><strong>Times Outsourced</strong></TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {analysisData.outsourcing_analytics.most_outsourced_operation_types.map((item, idx) => (
+                                  <TableRow key={idx} sx={{ backgroundColor: idx === 0 ? '#fff3e0' : 'white' }}>
+                                    <TableCell>{item.operation_type}</TableCell>
+                                    <TableCell align="right">
+                                      <strong>{item.frequency}</strong>
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
+                        ) : (
+                          <Alert severity="info">No operations outsourced</Alert>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+
+                  {/* Savings by Operation Type */}
+                  <Grid item xs={12} md={6}>
+                    <Card sx={{ height: '100%' }}>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          💰 Average Savings by Operation Type
+                        </Typography>
+                        {analysisData.outsourcing_analytics.avg_savings_by_operation_type.length > 0 ? (
+                          <TableContainer>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell><strong>Operation Type</strong></TableCell>
+                                  <TableCell align="right"><strong>Avg Savings</strong></TableCell>
+                                  <TableCell align="right"><strong>Total Saved</strong></TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {analysisData.outsourcing_analytics.avg_savings_by_operation_type.map((item, idx) => (
+                                  <TableRow key={idx} sx={{ backgroundColor: idx === 0 ? '#e8f5e9' : 'white' }}>
+                                    <TableCell>{item.operation_type}</TableCell>
+                                    <TableCell align="right" sx={{ color: '#2e7d32', fontWeight: 'bold' }}>
+                                      ${item.avg_savings.toFixed(2)}
+                                    </TableCell>
+                                    <TableCell align="right">
+                                      ${item.total_savings.toFixed(2)}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
+                        ) : (
+                          <Alert severity="info">No cost savings data available</Alert>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+
+                  {/* Most Outsourced Jobs */}
+                  <Grid item xs={12}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          📋 Jobs Outsourced Most Frequently
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                          Jobs appearing here across multiple hourly rates may indicate missing in-house capacity or specialized requirements
+                        </Typography>
+                        {analysisData.outsourcing_analytics.most_outsourced_jobs.length > 0 ? (
+                          <TableContainer>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell><strong>Job ID</strong></TableCell>
+                                  <TableCell align="right"><strong>Outsourcing Frequency</strong></TableCell>
+                                  <TableCell><strong>Insight</strong></TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {analysisData.outsourcing_analytics.most_outsourced_jobs.slice(0, 10).map((item, idx) => {
+                                  const frequencyPct = (item.frequency / hourlyRates.length) * 100;
+                                  let insight = '';
+                                  if (frequencyPct >= 80) {
+                                    insight = '🔴 Consistently outsourced - Consider expanding in-house capacity';
+                                  } else if (frequencyPct >= 50) {
+                                    insight = '🟡 Frequently outsourced - May need specialized equipment or skills';
+                                  } else {
+                                    insight = '🟢 Occasionally outsourced - Cost-driven decision';
+                                  }
+                                  
+                                  return (
+                                    <TableRow key={idx} sx={{ backgroundColor: idx < 3 ? '#ffebee' : 'white' }}>
+                                      <TableCell><strong>{item.job_id}</strong></TableCell>
+                                      <TableCell align="right">
+                                        {item.frequency} / {hourlyRates.length} rates ({frequencyPct.toFixed(0)}%)
+                                      </TableCell>
+                                      <TableCell>{insight}</TableCell>
+                                    </TableRow>
+                                  );
+                                })}
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
+                        ) : (
+                          <Alert severity="success">
+                            All operations can be handled in-house at competitive costs
+                          </Alert>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+
+                  {/* Improvement Recommendations */}
+                  <Grid item xs={12}>
+                    <Card sx={{ bgcolor: '#e8f5e9', border: '1px solid #4caf50' }}>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom sx={{ color: '#2e7d32', display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <span>💡</span> Recommendations for Improvement
+                        </Typography>
+                        <Box component="ul" sx={{ pl: 2, mb: 0 }}>
+                          {analysisData.outsourcing_analytics.most_outsourced_operation_types.length > 0 && (
+                            <li>
+                              <Typography variant="body1" sx={{ mb: 1 }}>
+                                <strong>Invest in {analysisData.outsourcing_analytics.most_outsourced_operation_types[0].operation_type} capabilities:</strong> This operation type is outsourced most frequently. Adding specialized equipment or training could reduce vendor dependency.
+                              </Typography>
+                            </li>
+                          )}
+                          {analysisData.outsourcing_analytics.avg_savings_by_operation_type.length > 0 && (
+                            <li>
+                              <Typography variant="body1" sx={{ mb: 1 }}>
+                                <strong>Negotiate vendor contracts for {analysisData.outsourcing_analytics.avg_savings_by_operation_type[0].operation_type}:</strong> Highest savings potential. Lock in rates with long-term contracts to maintain cost advantage.
+                              </Typography>
+                            </li>
+                          )}
+                          {analysisData.outsourcing_analytics.most_outsourced_jobs.length > 0 && (
+                            <li>
+                              <Typography variant="body1" sx={{ mb: 1 }}>
+                                <strong>Review job {analysisData.outsourcing_analytics.most_outsourced_jobs[0].job_id} requirements:</strong> Outsourced across {analysisData.outsourcing_analytics.most_outsourced_jobs[0].frequency} different rate scenarios. Consider if in-house production is feasible with process improvements.
+                              </Typography>
+                            </li>
+                          )}
+                          <li>
+                            <Typography variant="body1" sx={{ mb: 1 }}>
+                              <strong>Monitor outsourcing threshold:</strong> Current decision uses 85% threshold (outsource if vendor cost {"<"} 85% of in-house). Adjust this based on quality, lead time, and strategic considerations.
+                            </Typography>
+                          </li>
+                          <li>
+                            <Typography variant="body1">
+                              <strong>Balance cost vs delivery:</strong> At ${analysisData.best_on_time_rate}/hr, you achieve {analysisData.best_on_time_pct?.toFixed(1)}% on-time delivery. Consider if the extra cost justifies better service levels.
+                            </Typography>
+                          </li>
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                </Grid>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Data Table - Enhanced with Scheduling Metrics */}
           <Card>

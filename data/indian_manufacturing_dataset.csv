@@ -1,0 +1,69 @@
+Job Number,Operation,Machine,Release Date,Planned Finish,Proc Time (hrs),Priority Class,Outsourcing Cost,Can Outsource,Customer Name
+TATA_001,Machining,CNC_Mill_01,2025-01-05,2025-01-12,3.5,HIGH,2800,Yes,Tata Motors Ltd
+TATA_001,Grinding,Surface_Grinder_01,2025-01-05,2025-01-12,2.2,HIGH,1500,No,Tata Motors Ltd
+TATA_001,Inspection,Quality_Station,2025-01-05,2025-01-12,0.5,HIGH,500,No,Tata Motors Ltd
+MAHINDRA_001,Turning,CNC_Lathe_01,2025-01-06,2025-01-14,4.8,HIGH,3200,Yes,Mahindra & Mahindra
+MAHINDRA_001,Milling,CNC_Mill_02,2025-01-06,2025-01-14,3.0,HIGH,2400,No,Mahindra & Mahindra
+MAHINDRA_001,Heat_Treatment,Furnace_01,2025-01-06,2025-01-14,6.0,HIGH,4500,Yes,Mahindra & Mahindra
+LARSEN_001,Welding,Welding_Station_01,2025-01-04,2025-01-10,2.5,MEDIUM,1800,Yes,Larsen & Toubro
+LARSEN_001,Painting,Paint_Booth,2025-01-04,2025-01-10,1.5,MEDIUM,1200,No,Larsen & Toubro
+BHEL_001,Casting,Casting_Unit,2025-01-07,2025-01-16,8.0,HIGH,6500,Yes,BHEL (Bharat Heavy)
+BHEL_001,Machining,CNC_Mill_01,2025-01-07,2025-01-16,4.5,HIGH,3000,No,BHEL (Bharat Heavy)
+BHEL_001,Assembly,Assembly_Line,2025-01-07,2025-01-16,2.0,HIGH,1600,No,BHEL (Bharat Heavy)
+BAJAJ_001,Turning,CNC_Lathe_02,2025-01-05,2025-01-11,2.8,MEDIUM,2000,Yes,Bajaj Auto
+BAJAJ_001,Drilling,Drill_Press_01,2025-01-05,2025-01-11,1.2,MEDIUM,800,No,Bajaj Auto
+RELIANCE_001,Fabrication,Fab_Station_01,2025-01-08,2025-01-15,5.5,HIGH,4000,Yes,Reliance Industries
+RELIANCE_001,Welding,Welding_Station_02,2025-01-08,2025-01-15,3.0,HIGH,2200,No,Reliance Industries
+GODREJ_001,Cutting,Laser_Cutter,2025-01-03,2025-01-09,1.8,LOW,1400,Yes,Godrej & Boyce
+GODREJ_001,Bending,Press_Brake,2025-01-03,2025-01-09,1.0,LOW,700,No,Godrej & Boyce
+TATA_002,Forging,Forging_Press,2025-01-09,2025-01-18,7.0,MEDIUM,5200,Yes,Tata Steel
+TATA_002,Machining,CNC_Mill_02,2025-01-09,2025-01-18,3.8,MEDIUM,2600,No,Tata Steel
+ASHOK_001,Turning,CNC_Lathe_01,2025-01-06,2025-01-13,3.2,MEDIUM,2300,Yes,Ashok Leyland
+ASHOK_001,Milling,CNC_Mill_01,2025-01-06,2025-01-13,2.5,MEDIUM,1900,No,Ashok Leyland
+WIPRO_001,Precision_Machining,CNC_Mill_03,2025-01-10,2025-01-17,4.0,LOW,2800,Yes,Wipro Infrastructure
+WIPRO_001,Surface_Finishing,Surface_Grinder_02,2025-01-10,2025-01-17,2.0,LOW,1400,No,Wipro Infrastructure
+HERO_001,Stamping,Stamping_Press,2025-01-04,2025-01-10,2.0,HIGH,1600,Yes,Hero MotoCorp
+HERO_001,Welding,Welding_Station_01,2025-01-04,2025-01-10,1.5,HIGH,1200,No,Hero MotoCorp
+HERO_001,Powder_Coating,Coating_Line,2025-01-04,2025-01-10,1.0,HIGH,900,Yes,Hero MotoCorp
+SIEMENS_001,CNC_Turning,CNC_Lathe_02,2025-01-11,2025-01-19,5.5,MEDIUM,3800,Yes,Siemens India
+SIEMENS_001,Grinding,Cylindrical_Grinder,2025-01-11,2025-01-19,3.0,MEDIUM,2100,No,Siemens India
+ABB_001,Machining,CNC_Mill_02,2025-01-07,2025-01-14,3.5,HIGH,2700,Yes,ABB India
+ABB_001,Assembly,Assembly_Line,2025-01-07,2025-01-14,1.8,HIGH,1300,No,ABB India
+SUZUKI_001,Die_Casting,Die_Cast_Machine,2025-01-05,2025-01-12,4.2,MEDIUM,3100,Yes,Maruti Suzuki
+SUZUKI_001,Trimming,Trimming_Press,2025-01-05,2025-01-12,1.5,MEDIUM,1000,No,Maruti Suzuki
+SUZUKI_001,Quality_Check,Inspection_Station,2025-01-05,2025-01-12,0.8,MEDIUM,600,No,Maruti Suzuki
+BOSCH_001,Precision_Boring,CNC_Boring_Mill,2025-01-12,2025-01-20,6.0,HIGH,4500,Yes,Bosch India
+BOSCH_001,Honing,Honing_Machine,2025-01-12,2025-01-20,2.5,HIGH,1800,No,Bosch India
+HINDALCO_001,Extrusion,Extrusion_Press,2025-01-08,2025-01-16,5.0,MEDIUM,3600,Yes,Hindalco Industries
+HINDALCO_001,Cutting,Metal_Saw,2025-01-08,2025-01-16,1.2,MEDIUM,800,No,Hindalco Industries
+HINDALCO_001,Anodizing,Anodizing_Tank,2025-01-08,2025-01-16,3.0,MEDIUM,2200,Yes,Hindalco Industries
+JSW_001,Rolling,Rolling_Mill,2025-01-09,2025-01-17,7.5,HIGH,5800,Yes,JSW Steel
+JSW_001,Cutting,Shearing_Machine,2025-01-09,2025-01-17,2.0,HIGH,1500,No,JSW Steel
+VEDANTA_001,Smelting,Smelting_Furnace,2025-01-13,2025-01-22,10.0,MEDIUM,7500,Yes,Vedanta Resources
+VEDANTA_001,Casting,Continuous_Caster,2025-01-13,2025-01-22,4.0,MEDIUM,3000,No,Vedanta Resources
+CUMMINS_001,Turning,CNC_Lathe_01,2025-01-06,2025-01-13,3.8,HIGH,2800,Yes,Cummins India
+CUMMINS_001,Drilling,Multi_Spindle_Drill,2025-01-06,2025-01-13,1.8,HIGH,1300,No,Cummins India
+CUMMINS_001,Tapping,Tapping_Machine,2025-01-06,2025-01-13,1.0,HIGH,700,No,Cummins India
+VOLTAS_001,Sheet_Metal_Work,Turret_Punch,2025-01-10,2025-01-17,2.8,LOW,2000,Yes,Voltas Ltd
+VOLTAS_001,Bending,CNC_Press_Brake,2025-01-10,2025-01-17,1.5,LOW,1100,No,Voltas Ltd
+THERMAX_001,Welding,TIG_Welding_Station,2025-01-11,2025-01-18,4.0,MEDIUM,2900,Yes,Thermax Ltd
+THERMAX_001,Testing,Pressure_Test_Rig,2025-01-11,2025-01-18,2.0,MEDIUM,1500,No,Thermax Ltd
+FORBES_001,Valve_Machining,CNC_Mill_03,2025-01-04,2025-01-11,4.5,HIGH,3300,Yes,Forbes Marshall
+FORBES_001,Lapping,Lapping_Machine,2025-01-04,2025-01-11,2.2,HIGH,1600,No,Forbes Marshall
+FORBES_001,Assembly,Clean_Room_Assembly,2025-01-04,2025-01-11,1.5,HIGH,1100,No,Forbes Marshall
+KIRLOSKAR_001,Pump_Casting,Centrifugal_Caster,2025-01-14,2025-01-23,6.5,MEDIUM,4800,Yes,Kirloskar Brothers
+KIRLOSKAR_001,Machining,CNC_Lathe_02,2025-01-14,2025-01-23,4.0,MEDIUM,2900,No,Kirloskar Brothers
+CROMPTON_001,Lamination_Stamping,Progressive_Die,2025-01-07,2025-01-14,3.0,MEDIUM,2200,Yes,Crompton Greaves
+CROMPTON_001,Winding,Coil_Winding_Machine,2025-01-07,2025-01-14,2.5,MEDIUM,1800,No,Crompton Greaves
+CROMPTON_001,Impregnation,Varnish_Tank,2025-01-07,2025-01-14,1.0,MEDIUM,700,Yes,Crompton Greaves
+EICHER_001,Gear_Cutting,Gear_Hobbing,2025-01-08,2025-01-16,5.0,HIGH,3700,Yes,Eicher Motors
+EICHER_001,Heat_Treatment,Carburizing_Furnace,2025-01-08,2025-01-16,4.5,HIGH,3400,Yes,Eicher Motors
+EICHER_001,Grinding,Gear_Grinder,2025-01-08,2025-01-16,3.0,HIGH,2200,No,Eicher Motors
+TAFE_001,Forging,Drop_Forge,2025-01-12,2025-01-20,5.5,MEDIUM,4000,Yes,TAFE (Tractors)
+TAFE_001,Machining,CNC_Mill_01,2025-01-12,2025-01-20,3.5,MEDIUM,2500,No,TAFE (Tractors)
+ESCORTS_001,Transmission_Machining,CNC_Mill_02,2025-01-09,2025-01-17,4.8,HIGH,3500,Yes,Escorts Ltd
+ESCORTS_001,Gear_Shaving,Gear_Shaver,2025-01-09,2025-01-17,2.0,HIGH,1500,No,Escorts Ltd
+APOLLO_001,Tube_Bending,CNC_Tube_Bender,2025-01-05,2025-01-12,2.5,LOW,1800,Yes,Apollo Tyres
+APOLLO_001,Welding,Robotic_Welder,2025-01-05,2025-01-12,1.8,LOW,1300,No,Apollo Tyres
+MRF_001,Mold_Machining,CNC_Mill_03,2025-01-13,2025-01-21,6.0,MEDIUM,4400,Yes,MRF Tyres
+MRF_001,Polishing,Buffing_Machine,2025-01-13,2025-01-21,2.5,MEDIUM,1800,No,MRF Tyres

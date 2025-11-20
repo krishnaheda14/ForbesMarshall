@@ -13,6 +13,8 @@ import {
   Divider,
   IconButton,
   Collapse,
+  Chip,
+  Alert,
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
@@ -26,11 +28,14 @@ import {
   PlayArrow,
   CloudUpload as UploadIcon,
   AttachMoney as CostIcon,
+  CheckCircle as CheckIcon,
+  Warning as WarningIcon,
 } from '@mui/icons-material';
 
 import HeuristicSelector from './HeuristicSelector';
 import ComputeControls from './ComputeControls';
 import MachineryControls from './MachineryControls';
+import useSchedulerStore from '../store/useSchedulerStore';
 
 const drawerWidth = 280;
 
@@ -41,6 +46,7 @@ const menuItems = [
   { text: 'Gantt Chart', icon: <GanttIcon />, path: '/gantt' },
   { text: 'Operations', icon: <OperationsIcon />, path: '/operations' },
   { text: 'Cost Analysis', icon: <CostIcon />, path: '/cost-analysis' },
+  { text: 'Outsourcing', icon: <FactoryIcon />, path: '/outsourcing' },
   { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
 ];
 
@@ -48,6 +54,7 @@ function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [controlsOpen, setControlsOpen] = useState(true);
+  const { dataLoaded, dataStats } = useSchedulerStore();
 
   return (
     <Drawer
@@ -73,6 +80,57 @@ function Sidebar() {
         <Typography variant="caption" sx={{ opacity: 0.8 }}>
           v2.0 - Advanced Scheduling
         </Typography>
+        
+        {/* Dataset Status Indicator */}
+        <Box sx={{ mt: 2 }}>
+          {dataLoaded ? (
+            <Alert 
+              severity="success" 
+              icon={<CheckIcon />}
+              sx={{ 
+                py: 0.5, 
+                fontSize: '0.75rem',
+                bgcolor: 'rgba(76, 175, 80, 0.2)',
+                color: 'white',
+                '& .MuiAlert-icon': { color: 'white' }
+              }}
+            >
+              <Box>
+                <Typography variant="caption" fontWeight="bold" display="block">
+                  Dataset Loaded
+                </Typography>
+                <Box display="flex" gap={0.5} mt={0.5} flexWrap="wrap">
+                  <Chip 
+                    label={`${dataStats?.operations || 0} Ops`} 
+                    size="small" 
+                    sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(255,255,255,0.3)', color: 'white' }}
+                  />
+                  <Chip 
+                    label={`${dataStats?.jobs || 0} Jobs`} 
+                    size="small" 
+                    sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(255,255,255,0.3)', color: 'white' }}
+                  />
+                </Box>
+              </Box>
+            </Alert>
+          ) : (
+            <Alert 
+              severity="warning" 
+              icon={<WarningIcon />}
+              sx={{ 
+                py: 0.5, 
+                fontSize: '0.75rem',
+                bgcolor: 'rgba(255, 152, 0, 0.2)',
+                color: 'white',
+                '& .MuiAlert-icon': { color: 'white' }
+              }}
+            >
+              <Typography variant="caption" fontWeight="bold">
+                No Dataset Loaded
+              </Typography>
+            </Alert>
+          )}
+        </Box>
       </Box>
 
       <Divider sx={{ borderColor: 'rgba(255,255,255,0.12)' }} />

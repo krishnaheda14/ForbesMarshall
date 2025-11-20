@@ -11,6 +11,16 @@ import {
   CircularProgress,
   Alert,
   Chip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  IconButton,
 } from '@mui/material';
 import {
   CloudUpload as LoadIcon,
@@ -18,12 +28,17 @@ import {
   CheckCircle as CheckIcon,
   Refresh as RefreshIcon,
   Info as InfoIcon,
+  CloudOff as UnloadIcon,
+  Add as AddIcon,
+  Delete as DeleteIcon,
+  Close as CloseIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import useSchedulerStore from '../store/useSchedulerStore';
-import { loadData, getCurrentSchedule, getAIInsights, getDataInfo } from '../services/api';
+import { loadData, unloadData, getCurrentSchedule, getAIInsights, getDataInfo, addJob, deleteJob } from '../services/api';
 import KPICards from '../components/KPICards';
 import AIInsightsPanel from '../components/AIInsightsPanel';
+import SchedulingAnimation from '../components/SchedulingAnimation';
 
 function Dashboard() {
   const { enqueueSnackbar } = useSnackbar();
@@ -36,10 +51,31 @@ function Dashboard() {
     loading,
     setLoading,
     metrics,
+    reset,
   } = useSchedulerStore();
 
   const [aiInsights, setAiInsights] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
+  const [addJobDialogOpen, setAddJobDialogOpen] = useState(false);
+  const [deleteJobDialogOpen, setDeleteJobDialogOpen] = useState(false);
+  const [jobToDelete, setJobToDelete] = useState('');
+  const [newJob, setNewJob] = useState({
+    job_id: '',
+    operations: [
+      {
+        operation_type: 'MILLING',
+        proc_time: 60,
+        setup_time: 10,
+        transfer_time: 5,
+        quantity: 1,
+        release_day: 0,
+        due_day: 10,
+        priority: 'Medium',
+        vendor_ref: 'V1',
+        outsource_cost: 0,
+      }
+    ]
+  });
 
   // Check if data is already loaded on mount
   useEffect(() => {
@@ -127,6 +163,107 @@ function Dashboard() {
     }
   };
 
+  const handleUnloadData = async () => {
+    try {
+      setLoading(true);
+      await unloadData();
+      reset();
+      enqueueSnackbar('Dataset unloaded successfully!', { variant: 'success' });
+    } catch (error) {
+      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
+        variant: 'error',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddJob = async () => {
+    try {
+      setLoading(true);
+      await addJob(newJob);
+      enqueueSnackbar(`Job ${newJob.job_id} added successfully!`, { variant: 'success' });
+      enqueueSnackbar('Please recompute heuristics to see the updated schedule', { variant: 'info' });
+      setAddJobDialogOpen(false);
+      setNewJob({
+        job_id: '',
+        operations: [
+          {
+            operation_type: 'MILLING',
+            proc_time: 60,
+            setup_time: 10,
+            transfer_time: 5,
+            quantity: 1,
+            release_day: 0,
+            due_day: 10,
+            priority: 'Medium',
+            vendor_ref: 'V1',
+            outsource_cost: 0,
+          }
+        ]
+      });
+      // Refresh data info
+      await checkDataStatus();
+    } catch (error) {
+      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
+        variant: 'error',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteJob = async () => {
+    try {
+      setLoading(true);
+      await deleteJob(jobToDelete);
+      enqueueSnackbar(`Job ${jobToDelete} deleted successfully!`, { variant: 'success' });
+      enqueueSnackbar('Please recompute heuristics to see the updated schedule', { variant: 'info' });
+      setDeleteJobDialogOpen(false);
+      setJobToDelete('');
+      // Refresh data info
+      await checkDataStatus();
+    } catch (error) {
+      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
+        variant: 'error',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addOperation = () => {
+    setNewJob({
+      ...newJob,
+      operations: [
+        ...newJob.operations,
+        {
+          operation_type: 'MILLING',
+          proc_time: 60,
+          setup_time: 10,
+          transfer_time: 5,
+          quantity: 1,
+          release_day: 0,
+          due_day: 10,
+          priority: 'Medium',
+          vendor_ref: 'V1',
+          outsource_cost: 0,
+        }
+      ]
+    });
+  };
+
+  const removeOperation = (index) => {
+    const newOps = newJob.operations.filter((_, i) => i !== index);
+    setNewJob({ ...newJob, operations: newOps });
+  };
+
+  const updateOperation = (index, field, value) => {
+    const newOps = [...newJob.operations];
+    newOps[index][field] = value;
+    setNewJob({ ...newJob, operations: newOps });
+  };
+
 
 
   return (
@@ -189,15 +326,42 @@ function Dashboard() {
                     </Box>
                   </Box>
                 </Box>
-                <Button
-                  variant="outlined"
-                  color="success"
-                  startIcon={<RefreshIcon />}
-                  onClick={handleLoadData}
-                  disabled={loading}
-                >
-                  Reload Dataset
-                </Button>
+                <Box display="flex" gap={1}>
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    startIcon={<AddIcon />}
+                    onClick={() => setAddJobDialogOpen(true)}
+                  >
+                    Add Job
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    startIcon={<DeleteIcon />}
+                    onClick={() => setDeleteJobDialogOpen(true)}
+                  >
+                    Delete Job
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="success"
+                    startIcon={<RefreshIcon />}
+                    onClick={handleLoadData}
+                    disabled={loading}
+                  >
+                    Reload
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="warning"
+                    startIcon={<UnloadIcon />}
+                    onClick={handleUnloadData}
+                    disabled={loading}
+                  >
+                    Unload
+                  </Button>
+                </Box>
               </Box>
             </CardContent>
           </Card>
@@ -229,6 +393,16 @@ function Dashboard() {
               </Box>
 
               <KPICards />
+
+              {/* Scheduling Animation */}
+              {currentSchedule && currentSchedule.length > 0 && (
+                <Box sx={{ mt: 3 }}>
+                  <SchedulingAnimation 
+                    schedule={currentSchedule} 
+                    heuristic={currentHeuristic}
+                  />
+                </Box>
+              )}
 
               {aiInsights && (
                 <Box sx={{ mt: 3 }}>
@@ -280,6 +454,248 @@ function Dashboard() {
           )}
         </>
       )}
+
+      {/* Add Job Dialog */}
+      <Dialog open={addJobDialogOpen} onClose={() => setAddJobDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box display="flex" alignItems="center" justifyContent="space-between">
+            Add New Job
+            <IconButton onClick={() => setAddJobDialogOpen(false)}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 2 }}>
+            <TextField
+              fullWidth
+              label="Job ID"
+              value={newJob.job_id}
+              onChange={(e) => setNewJob({ ...newJob, job_id: e.target.value })}
+              sx={{ mb: 3 }}
+              placeholder="e.g., J101"
+            />
+            
+            <Alert severity="info" sx={{ mb: 3 }}>
+              <strong>⚙️ Operation Sequence (Precedence Constraints):</strong>
+              <br />
+              Operations execute <strong>in sequential order</strong> - each operation can only start after the previous one completes.
+              <br />
+              <strong>Example Workflow:</strong>
+              <br />
+              • Seq 1: TURNING (rough shaping) → completes at 120 min
+              <br />
+              • Seq 2: MILLING (precision cuts) → starts at 120 min, completes at 200 min
+              <br />
+              • Seq 3: DRILLING (holes) → starts at 200 min, completes at 250 min
+              <br />
+              • Seq 4: GRINDING (finishing) → starts at 250 min, completes at 300 min
+              <br />
+              <br />
+              The scheduler automatically enforces this precedence - you just define the order below.
+            </Alert>
+            
+            <Typography variant="h6" gutterBottom>
+              Operations (Executed in Sequence Order)
+            </Typography>
+            
+            {newJob.operations.map((op, index) => (
+              <Box key={index}>
+                <Card sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', position: 'relative' }}>
+                  <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <Chip 
+                        label={`Seq ${index + 1}`} 
+                        color="primary" 
+                        size="small"
+                        sx={{ fontWeight: 'bold' }}
+                      />
+                      <Typography variant="subtitle1">Operation {index + 1}</Typography>
+                      {index > 0 && (
+                        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                          (Starts after Op {index} completes)
+                        </Typography>
+                      )}
+                    </Box>
+                    {newJob.operations.length > 1 && (
+                      <IconButton onClick={() => removeOperation(index)} color="error" size="small">
+                        <DeleteIcon />
+                      </IconButton>
+                    )}
+                  </Box>
+                
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={6}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Operation Type</InputLabel>
+                      <Select
+                        value={op.operation_type}
+                        onChange={(e) => updateOperation(index, 'operation_type', e.target.value)}
+                        label="Operation Type"
+                      >
+                        <MenuItem value="MILLING">MILLING (Machines: M1, M3, M4)</MenuItem>
+                        <MenuItem value="TURNING">TURNING (Machines: M6, M9)</MenuItem>
+                        <MenuItem value="DRILLING">DRILLING (Machines: M1, M3, M4)</MenuItem>
+                        <MenuItem value="GRINDING">GRINDING (Machines: M6, M9)</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Processing Time (min)"
+                      value={op.proc_time}
+                      onChange={(e) => updateOperation(index, 'proc_time', Number(e.target.value))}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Setup Time (min)"
+                      value={op.setup_time}
+                      onChange={(e) => updateOperation(index, 'setup_time', Number(e.target.value))}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Transfer Time (min)"
+                      value={op.transfer_time}
+                      onChange={(e) => updateOperation(index, 'transfer_time', Number(e.target.value))}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Quantity"
+                      value={op.quantity}
+                      onChange={(e) => updateOperation(index, 'quantity', Number(e.target.value))}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Release Day"
+                      value={op.release_day}
+                      onChange={(e) => updateOperation(index, 'release_day', Number(e.target.value))}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Due Day"
+                      value={op.due_day}
+                      onChange={(e) => updateOperation(index, 'due_day', Number(e.target.value))}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Priority</InputLabel>
+                      <Select
+                        value={op.priority}
+                        onChange={(e) => updateOperation(index, 'priority', e.target.value)}
+                        label="Priority"
+                      >
+                        <MenuItem value="Low">Low</MenuItem>
+                        <MenuItem value="Medium">Medium</MenuItem>
+                        <MenuItem value="High">High</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="Vendor Reference"
+                      value={op.vendor_ref}
+                      onChange={(e) => updateOperation(index, 'vendor_ref', e.target.value)}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label="Outsource Cost ($)"
+                      value={op.outsource_cost}
+                      onChange={(e) => updateOperation(index, 'outsource_cost', Number(e.target.value))}
+                    />
+                  </Grid>
+                </Grid>
+              </Card>
+              {index < newJob.operations.length - 1 && (
+                <Box sx={{ textAlign: 'center', my: 1 }}>
+                  <Typography variant="h6" color="primary">↓</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Then execute
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+            ))}
+            
+            <Button
+              fullWidth
+              variant="outlined"
+              startIcon={<AddIcon />}
+              onClick={addOperation}
+              sx={{ mt: 2 }}
+            >
+              Add Another Operation
+            </Button>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAddJobDialogOpen(false)}>Cancel</Button>
+          <Button 
+            onClick={handleAddJob} 
+            variant="contained" 
+            disabled={!newJob.job_id || newJob.operations.length === 0 || loading}
+          >
+            Add Job
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Job Dialog */}
+      <Dialog open={deleteJobDialogOpen} onClose={() => setDeleteJobDialogOpen(false)}>
+        <DialogTitle>Delete Job</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Enter the Job ID to delete. All operations for this job will be removed.
+          </Typography>
+          <TextField
+            fullWidth
+            label="Job ID"
+            value={jobToDelete}
+            onChange={(e) => setJobToDelete(e.target.value)}
+            placeholder="e.g., J1"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteJobDialogOpen(false)}>Cancel</Button>
+          <Button 
+            onClick={handleDeleteJob} 
+            variant="contained" 
+            color="error"
+            disabled={!jobToDelete || loading}
+          >
+            Delete Job
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 }

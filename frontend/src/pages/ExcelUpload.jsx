@@ -37,6 +37,7 @@ import {
   CheckCircle as ConfirmIcon,
   Psychology as AIIcon,
   Refresh as RefreshIcon,
+  CompareArrows as CompareArrowsIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import axios from 'axios';
@@ -256,16 +257,30 @@ function ExcelUpload() {
   const handleComputeAllHeuristics = async () => {
     setLoading(true);
     try {
-      const response = await axios.post(`${API_BASE}/api/schedule/compute-all`);
+      const heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK'];
+      const allMetrics = {};
       
-      enqueueSnackbar('All heuristics computed successfully!', { variant: 'success' });
+      // Run each heuristic sequentially
+      for (const heuristic of heuristics) {
+        const formData = new FormData();
+        formData.append('file', file);
+        if (selectedSheet) formData.append('sheet_name', selectedSheet);
+        formData.append('mappings', JSON.stringify(mappings));
+        formData.append('heuristic', heuristic);
+        
+        const response = await axios.post(`${API_BASE}/api/excel/load-and-schedule`, formData);
+        
+        // Store metrics for this heuristic
+        allMetrics[heuristic] = response.data.metrics;
+      }
       
-      // Fetch comparison data
-      const comparisonResponse = await axios.get(`${API_BASE}/api/metrics/comparison`);
+      // Update state with all metrics
       setScheduleResult({
         ...scheduleResult,
-        allMetrics: comparisonResponse.data.results
+        allMetrics: allMetrics
       });
+      
+      enqueueSnackbar('All heuristics computed successfully!', { variant: 'success' });
       
     } catch (error) {
       enqueueSnackbar(`Failed to compute: ${error.response?.data?.detail || error.message}`, { 
@@ -355,7 +370,7 @@ function ExcelUpload() {
           </Typography>
           
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            Supports .xlsx and .xls formats
+            Supports .xlsx, .xls, and .csv formats
           </Typography>
           
           <Button
@@ -368,7 +383,7 @@ function ExcelUpload() {
             <input
               type="file"
               hidden
-              accept=".xlsx,.xls"
+              accept=".xlsx,.xls,.csv"
               onChange={handleFileSelect}
             />
           </Button>
@@ -840,11 +855,10 @@ function ExcelUpload() {
                     return {
                       x: [item.Start_Time, item.End_Time],
                       y: [item.Machine_ID, item.Machine_ID],
-                      type: 'scatter',
+                      type: 'line',
                       mode: 'lines',
                       line: { width: 20, color: getJobColor(item.Job_ID) },
                       name: `${item.Job_ID} - ${item.Operation_ID}`,
-                      text: `${item.Job_ID}`,
                       hovertemplate:
                         `<b>Machine:</b> ${item.Machine_ID}<br>` +
                         `<b>Job:</b> ${item.Job_ID}<br>` +
@@ -854,10 +868,6 @@ function ExcelUpload() {
                         `<b>Duration:</b> ${item.End_Time - item.Start_Time} min` +
                         (item.Priority ? `<br><b>Priority:</b> ${item.Priority}` : '') +
                         `<extra></extra>`,
-                      hoverlabel: {
-                        bgcolor: 'white',
-                        font: { size: 12, color: 'black' }
-                      }
                     };
                   })}
                   layout={{
@@ -873,7 +883,6 @@ function ExcelUpload() {
                     },
                     height: 600,
                     showlegend: false,
-                    hovermode: 'closest',
                   }}
                   config={{
                     displayModeBar: true,
@@ -953,21 +962,24 @@ function ExcelUpload() {
           </Box>
 
           {/* All Heuristics Comparison Table */}
-          {scheduleResult.allMetrics && (
+          {scheduleResult?.allMetrics && (
             <Box sx={{ mt: 3 }}>
               <Divider sx={{ my: 3 }} />
-              <Typography variant="h6" gutterBottom>
-                Heuristics Comparison
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <CompareArrowsIcon />
+                Heuristics Comparison - All Results
               </Typography>
-              <TableContainer>
-                <Table>
+              <TableContainer component={Paper} sx={{ mt: 2 }}>
+                <Table size="small">
                   <TableHead>
-                    <TableRow>
+                    <TableRow sx={{ bgcolor: '#f5f5f5' }}>
                       <TableCell><strong>Heuristic</strong></TableCell>
-                      <TableCell align="right"><strong>Makespan (min)</strong></TableCell>
-                      <TableCell align="right"><strong>Avg Completion (min)</strong></TableCell>
-                      <TableCell align="right"><strong>Total Tardiness (min)</strong></TableCell>
+                      <TableCell align="right"><strong>Makespan (days)</strong></TableCell>
+                      <TableCell align="right"><strong>Tardiness (min)</strong></TableCell>
+                      <TableCell align="right"><strong>Late Ops</strong></TableCell>
+                      <TableCell align="right"><strong>Total Cost ($)</strong></TableCell>
                       <TableCell align="right"><strong>Utilization (%)</strong></TableCell>
+                      <TableCell align="right"><strong>Avg Completion (min)</strong></TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -976,19 +988,94 @@ function ExcelUpload() {
                         key={heuristic}
                         sx={{ 
                           bgcolor: heuristic === selectedHeuristic ? '#e3f2fd' : 'transparent',
-                          fontWeight: heuristic === selectedHeuristic ? 'bold' : 'normal'
+                          '&:hover': { bgcolor: '#f5f5f5' }
                         }}
                       >
-                        <TableCell>{heuristic}</TableCell>
-                        <TableCell align="right">{metrics.makespan?.toFixed(0) || 'N/A'}</TableCell>
-                        <TableCell align="right">{metrics.avg_completion?.toFixed(0) || 'N/A'}</TableCell>
-                        <TableCell align="right">{metrics.total_tardiness?.toFixed(0) || 'N/A'}</TableCell>
-                        <TableCell align="right">{metrics.utilization?.toFixed(1) || 'N/A'}</TableCell>
+                        <TableCell>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Chip 
+                              label={heuristic} 
+                              size="small" 
+                              color={heuristic === selectedHeuristic ? 'primary' : 'default'}
+                            />
+                          </Box>
+                        </TableCell>
+                        <TableCell align="right">
+                          {metrics.makespan_days?.toFixed(2) || (metrics.makespan / 480)?.toFixed(2) || 'N/A'}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography 
+                            variant="body2" 
+                            color={metrics.total_tardiness > 0 ? 'error' : 'success.main'}
+                          >
+                            {metrics.total_tardiness?.toFixed(0) || '0'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Chip 
+                            label={metrics.late_operations || 0}
+                            size="small"
+                            color={metrics.late_operations > 0 ? 'error' : 'success'}
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          ${metrics.total_cost?.toFixed(0) || 'N/A'}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, justifyContent: 'flex-end' }}>
+                            <Typography variant="body2">
+                              {metrics.utilization?.toFixed(1) || 'N/A'}%
+                            </Typography>
+                            <Box 
+                              sx={{ 
+                                width: 40, 
+                                height: 4, 
+                                bgcolor: '#e0e0e0', 
+                                borderRadius: 2,
+                                overflow: 'hidden'
+                              }}
+                            >
+                              <Box 
+                                sx={{ 
+                                  width: `${Math.min(metrics.utilization || 0, 100)}%`,
+                                  height: '100%',
+                                  bgcolor: metrics.utilization > 80 ? '#4caf50' : metrics.utilization > 60 ? '#ff9800' : '#f44336'
+                                }}
+                              />
+                            </Box>
+                          </Box>
+                        </TableCell>
+                        <TableCell align="right">
+                          {metrics.avg_completion?.toFixed(0) || 'N/A'}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
               </TableContainer>
+              
+              {/* Best Heuristic Recommendation */}
+              <Box sx={{ mt: 2, p: 2, bgcolor: '#f0f9ff', borderRadius: 2, border: '1px solid #bae6fd' }}>
+                <Typography variant="subtitle2" color="primary" gutterBottom>
+                  📊 Quick Analysis
+                </Typography>
+                <Typography variant="body2">
+                  {(() => {
+                    const metrics = scheduleResult.allMetrics;
+                    const bestMakespan = Object.entries(metrics).reduce((best, [h, m]) => 
+                      (m.makespan || m.makespan_days * 480) < (metrics[best]?.makespan || metrics[best]?.makespan_days * 480 || Infinity) ? h : best
+                    , Object.keys(metrics)[0]);
+                    const bestTardiness = Object.entries(metrics).reduce((best, [h, m]) => 
+                      (m.total_tardiness || 0) < (metrics[best]?.total_tardiness || Infinity) ? h : best
+                    , Object.keys(metrics)[0]);
+                    const bestUtil = Object.entries(metrics).reduce((best, [h, m]) => 
+                      (m.utilization || 0) > (metrics[best]?.utilization || 0) ? h : best
+                    , Object.keys(metrics)[0]);
+                    
+                    return `Best Makespan: ${bestMakespan} | Best On-Time: ${bestTardiness} | Best Utilization: ${bestUtil}`;
+                  })()}
+                </Typography>
+              </Box>
             </Box>
           )}
         </Paper>

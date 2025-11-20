@@ -19,33 +19,54 @@ class ExcelIngestor:
         self.df = None
         self.sheet_names = []
         self.column_info = {}
+        self.file_content = None  # Store file content for later parsing
+        self.filename = None  # Store filename to detect type
         
     async def load_file(self, file: UploadFile) -> Dict[str, Any]:
         """
-        Load Excel file and extract metadata
+        Load Excel or CSV file and extract metadata
         
         Returns:
-            - sheet_names: List of available sheets
+            - sheet_names: List of available sheets (for Excel) or ["Sheet1"] (for CSV)
             - file_info: Basic file information
         """
         try:
             # Read file content
             content = await file.read()
+            filename = file.filename.lower()
             
-            # Get sheet names
-            excel_file = openpyxl.load_workbook(BytesIO(content), read_only=True)
-            self.sheet_names = excel_file.sheetnames
-            excel_file.close()
+            # Store for later parsing
+            self.file_content = content
+            self.filename = filename
             
-            return {
-                "status": "success",
-                "filename": file.filename,
-                "sheet_names": self.sheet_names,
-                "message": f"File loaded successfully. Found {len(self.sheet_names)} sheet(s)."
-            }
+            # Check if it's a CSV file
+            if filename.endswith('.csv'):
+                # For CSV, we treat it as a single sheet
+                self.sheet_names = ["Sheet1"]
+                return {
+                    "status": "success",
+                    "filename": file.filename,
+                    "sheet_names": self.sheet_names,
+                    "message": f"CSV file loaded successfully.",
+                    "file_type": "csv"
+                }
+            else:
+                # Handle Excel files
+                # Get sheet names
+                excel_file = openpyxl.load_workbook(BytesIO(content), read_only=True)
+                self.sheet_names = excel_file.sheetnames
+                excel_file.close()
+                
+                return {
+                    "status": "success",
+                    "filename": file.filename,
+                    "sheet_names": self.sheet_names,
+                    "message": f"File loaded successfully. Found {len(self.sheet_names)} sheet(s).",
+                    "file_type": "excel"
+                }
             
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to load Excel file: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Failed to load file: {str(e)}")
     
     async def parse_sheet(
         self, 
@@ -54,11 +75,11 @@ class ExcelIngestor:
         sample_rows: int = 10
     ) -> Dict[str, Any]:
         """
-        Parse specific sheet and extract column information
+        Parse specific sheet (Excel) or CSV file and extract column information
         
         Args:
-            file: Uploaded Excel file
-            sheet_name: Name of sheet to parse (uses first sheet if None)
+            file: Uploaded Excel or CSV file
+            sheet_name: Name of sheet to parse (uses first sheet if None, ignored for CSV)
             sample_rows: Number of sample rows to return
             
         Returns:
@@ -68,13 +89,22 @@ class ExcelIngestor:
             - row_count: Total number of rows
         """
         try:
-            content = await file.read()
+            # Use stored file content and filename
+            if not self.file_content or not self.filename:
+                raise HTTPException(status_code=400, detail="No file loaded. Please load a file first.")
             
-            # Read specific sheet
-            if sheet_name:
-                self.df = pd.read_excel(BytesIO(content), sheet_name=sheet_name)
+            # Read CSV or Excel based on stored filename
+            if self.filename.endswith('.csv'):
+                self.df = pd.read_csv(BytesIO(self.file_content))
+                actual_sheet_name = "Sheet1"
             else:
-                self.df = pd.read_excel(BytesIO(content))
+                # Read specific sheet for Excel
+                if sheet_name:
+                    self.df = pd.read_excel(BytesIO(self.file_content), sheet_name=sheet_name)
+                    actual_sheet_name = sheet_name
+                else:
+                    self.df = pd.read_excel(BytesIO(self.file_content))
+                    actual_sheet_name = "Sheet1"
             
             # Normalize column names
             self.df.columns = self.df.columns.str.strip()
@@ -115,11 +145,11 @@ class ExcelIngestor:
                 "sample_data": sample_data,
                 "row_count": len(self.df),
                 "column_count": len(self.df.columns),
-                "sheet_name": sheet_name or "Sheet1"
+                "sheet_name": actual_sheet_name
             }
             
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to parse sheet: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
     
     def _infer_semantic_type(self, column_name: str, column_data: pd.Series) -> str:
         """

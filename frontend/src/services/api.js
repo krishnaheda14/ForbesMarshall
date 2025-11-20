@@ -93,6 +93,11 @@ export const loadData = async (sampleSize = null) => {
   return response.data;
 };
 
+export const unloadData = async () => {
+  const response = await api.post('/api/data/unload');
+  return response.data;
+};
+
 export const getDataInfo = async () => {
   const response = await api.get('/api/data/info');
   return response.data;
@@ -140,6 +145,11 @@ export const updateJobPriority = async (jobId, priority) => {
     job_id: jobId,
     priority: priority,
   });
+  return response.data;
+};
+
+export const addJob = async (jobData) => {
+  const response = await api.post('/api/job/add', jobData);
   return response.data;
 };
 

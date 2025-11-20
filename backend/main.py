@@ -24,6 +24,7 @@ from cnc_scheduler_core import (
     calculate_metrics,
     analyze_capacity_for_new_job
 )
+from core.cp_sat_scheduler import solve_with_cpsat
 
 # Import new Excel ingestion modules
 from excel_ingestion import ExcelIngestor, normalize_column_names
@@ -250,12 +251,12 @@ You are an expert in manufacturing scheduling, operations research, and producti
 
 **CONTEXT:**
 This is a CNC job scheduling application with 6 heuristics:
-- SPT (Shortest Processing Time)
-- EDD (Earliest Due Date)
-- CR (Critical Ratio)
-- PRIORITY (Job priority-based)
-- WEIGHTED (Multi-objective)
-- SLACK (Minimum slack time)
+- SPT (Shortest Processing Time): Schedules shortest jobs first
+- EDD (Earliest Due Date): Prioritizes jobs with nearest deadlines
+- CR (Critical Ratio): Uses due_date/processing_time ratio
+- PRIORITY (Job priority-based): Schedules based on job priority values (1=High, 2=Medium, 3=Low)
+- WEIGHTED (Multi-objective): Balances priority, slack time, and processing time with weights
+- SLACK (Minimum slack time): Schedules jobs with least slack (due_time - current_time - processing_time)
 
 {prompt}
 """
@@ -448,7 +449,7 @@ def compute_all_heuristics():
     if state.df_ops is None:
         raise HTTPException(status_code=400, detail="Data not loaded")
     
-    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK']
     results = {}
     
     try:
@@ -483,6 +484,65 @@ def compute_all_heuristics():
             "comparison": list(state.metrics.values())
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class CPSATRequest(BaseModel):
+    objective_mode: str = 'min_weighted'
+    alpha: float = 0.1
+    time_limit_seconds: int = 30
+    log: bool = False
+
+@app.post("/api/schedule/cpsat")
+def run_cpsat(request: CPSATRequest):
+    """Run CP-SAT optimization to obtain an improved/optimal schedule.
+
+    Returns schedule plus metrics comparable to heuristic results.
+    """
+    if state.df_ops is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    try:
+        # Solve with CP-SAT
+        result = solve_with_cpsat(
+            state.df_ops.copy(),
+            state.df_machines.copy(),
+            state.df_effective.copy(),
+            state.df_penalties.copy(),
+            objective_mode=request.objective_mode,
+            alpha=request.alpha,
+            time_limit_seconds=request.time_limit_seconds,
+            log=request.log
+        )
+
+        schedule_df = pd.DataFrame(result.schedule)
+        # Compute metrics (reuse calculate_metrics but heuristic label = CPSAT)
+        metrics = calculate_metrics(schedule_df, state.df_ops, 'CPSAT')
+
+        # Add solver stats & objective
+        metrics['objective_mode'] = request.objective_mode
+        metrics['solver_status'] = result.status
+        metrics['objective_value'] = result.objective_value
+        metrics['solver_conflicts'] = result.solver_stats.get('conflicts')
+        metrics['solver_branches'] = result.solver_stats.get('branches')
+        metrics['solver_wall_time'] = result.solver_stats.get('wall_time')
+
+        # Store schedule similar to heuristics
+        state.schedules['CPSAT'] = schedule_df
+        state.metrics['CPSAT'] = metrics
+
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Computed CPSAT',
+            'details': f"Status={result.status} Obj={result.objective_value} Mode={request.objective_mode}"
+        })
+
+        return {
+            'status': 'success',
+            'schedule': schedule_df.to_dict('records'),
+            'metrics': metrics
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/schedule/apply")
@@ -711,6 +771,7 @@ def analyze_hourly_cost(request: dict):
             ops_to_schedule = []
             outsourced_ops_list = []
             outsource_cost = 0
+            outsourcing_details = []
             
             for idx, op in state.df_ops.iterrows():
                 op_inhouse_cost = (op['Total_Proc_Min'] / 60) * rate
@@ -720,6 +781,23 @@ def analyze_hourly_cost(request: dict):
                 if op_outsource_cost > 0 and op_outsource_cost < (op_inhouse_cost * 0.85):
                     outsourced_ops_list.append(op)
                     outsource_cost += op_outsource_cost
+                    
+                    # Track outsourcing details
+                    savings = op_inhouse_cost - op_outsource_cost
+                    savings_pct = (savings / op_inhouse_cost) * 100 if op_inhouse_cost > 0 else 0
+                    
+                    outsourcing_details.append({
+                        'job_id': op['Job_ID'],
+                        'operation_id': op['Operation_ID'],
+                        'operation_type': op['Operation_Type'],
+                        'proc_time_min': op['Total_Proc_Min'],
+                        'inhouse_cost': round(op_inhouse_cost, 2),
+                        'outsource_cost': round(op_outsource_cost, 2),
+                        'savings': round(savings, 2),
+                        'savings_pct': round(savings_pct, 2),
+                        'vendor_ref': op.get('Vendor_Ref', 'N/A'),
+                        'quantity': op.get('Quantity', 1)
+                    })
                 else:
                     ops_to_schedule.append(op)
             
@@ -774,7 +852,9 @@ def analyze_hourly_cost(request: dict):
                 'tardiness_days': round(tardiness_days, 2),
                 'utilization_pct': round(utilization, 2),
                 'on_time_pct': round(on_time_pct, 2),
-                'late_operations': late_ops
+                'late_operations': late_ops,
+                # Detailed outsourcing breakdown
+                'outsourcing_details': outsourcing_details
             })
         
         # Find key metrics
@@ -783,6 +863,61 @@ def analyze_hourly_cost(request: dict):
         current_rate = next((r for r in results if r['hourly_rate'] == 30), results[0])
         best_on_time = max(results, key=lambda x: x['on_time_pct'])
         lowest_tardiness = min(results, key=lambda x: x['tardiness_days'])
+        
+        # Analyze outsourcing patterns across all rates
+        all_outsourced = []
+        for result in results:
+            all_outsourced.extend(result['outsourcing_details'])
+        
+        # Find most frequently outsourced jobs and operation types
+        from collections import Counter
+        if all_outsourced:
+            job_outsource_freq = Counter(item['job_id'] for item in all_outsourced)
+            op_type_outsource_freq = Counter(item['operation_type'] for item in all_outsourced)
+            
+            # Get jobs/ops that are outsourced most frequently
+            most_outsourced_jobs = [{'job_id': job, 'frequency': count} 
+                                   for job, count in job_outsource_freq.most_common(10)]
+            most_outsourced_op_types = [{'operation_type': op_type, 'frequency': count} 
+                                        for op_type, count in op_type_outsource_freq.most_common()]
+            
+            # Calculate average savings per operation type
+            op_type_savings = {}
+            for item in all_outsourced:
+                op_type = item['operation_type']
+                if op_type not in op_type_savings:
+                    op_type_savings[op_type] = {'total_savings': 0, 'count': 0}
+                op_type_savings[op_type]['total_savings'] += item['savings']
+                op_type_savings[op_type]['count'] += 1
+            
+            avg_savings_by_type = [
+                {
+                    'operation_type': op_type,
+                    'avg_savings': round(data['total_savings'] / data['count'], 2),
+                    'total_savings': round(data['total_savings'], 2),
+                    'count': data['count']
+                }
+                for op_type, data in op_type_savings.items()
+            ]
+            avg_savings_by_type.sort(key=lambda x: x['avg_savings'], reverse=True)
+            
+            # Identify root causes
+            root_causes = []
+            if avg_savings_by_type:
+                top_savings_type = avg_savings_by_type[0]
+                root_causes.append(f"{top_savings_type['operation_type']} operations show highest vendor cost advantage (avg ${top_savings_type['avg_savings']} savings per operation)")
+            
+            high_proc_time_ops = [item for item in all_outsourced if item['proc_time_min'] > 120]
+            if high_proc_time_ops:
+                root_causes.append(f"{len(high_proc_time_ops)} outsourced operations have processing times >2 hours - vendors likely have specialized equipment")
+            
+            if most_outsourced_jobs:
+                root_causes.append(f"Jobs {', '.join(job['job_id'] for job in most_outsourced_jobs[:3])} are outsourced most frequently - may indicate capacity constraints or missing in-house capabilities")
+        else:
+            most_outsourced_jobs = []
+            most_outsourced_op_types = []
+            avg_savings_by_type = []
+            root_causes = ["No operations outsourced at any hourly rate - vendor costs exceed in-house costs across the board"]
         
         return {
             "status": "success",
@@ -799,9 +934,130 @@ def analyze_hourly_cost(request: dict):
             "lowest_tardiness_rate": lowest_tardiness['hourly_rate'],
             "lowest_tardiness": lowest_tardiness['tardiness_days'],
             "total_operations": len(state.df_ops),
-            "trade_off_insight": f"At ${lowest_cost['hourly_rate']}/hr (lowest cost), you'll have {lowest_cost['late_operations']} late operations with {lowest_cost['tardiness_days']:.1f} days total tardiness. At ${max_outsource['hourly_rate']}/hr, outsourcing reaches {max_outsource['outsourcing_pct']:.1f}% but may reduce tardiness to {max_outsource['tardiness_days']:.1f} days."
+            "trade_off_insight": f"At ${lowest_cost['hourly_rate']}/hr (lowest cost), you'll have {lowest_cost['late_operations']} late operations with {lowest_cost['tardiness_days']:.1f} days total tardiness. At ${max_outsource['hourly_rate']}/hr, outsourcing reaches {max_outsource['outsourcing_pct']:.1f}% but may reduce tardiness to {max_outsource['tardiness_days']:.1f} days.",
+            # Outsourcing analytics
+            "outsourcing_analytics": {
+                "most_outsourced_jobs": most_outsourced_jobs,
+                "most_outsourced_operation_types": most_outsourced_op_types,
+                "avg_savings_by_operation_type": avg_savings_by_type,
+                "root_causes": root_causes,
+                "total_unique_outsourced_operations": len(set(item['operation_id'] for item in all_outsourced)) if all_outsourced else 0
+            }
         }
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/data/unload")
+def unload_data():
+    """Unload all dataset and reset state"""
+    try:
+        state.df_ops = None
+        state.df_machines = None
+        state.df_effective = None
+        state.df_penalties = None
+        state.df_vendors = None
+        state.current_heuristic = None
+        state.cost_threshold = 15000
+        state.activity_log = []
+        
+        return {
+            "status": "success",
+            "message": "Dataset unloaded successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/job/add")
+def add_job(request: dict):
+    """
+    Add a new job with operations
+    
+    Important: Operations are executed in sequence order (Op_Seq).
+    The scheduler ensures that operation N+1 only starts after operation N completes.
+    For example: Turning (Op_Seq=1) -> Milling (Op_Seq=2) -> Drilling (Op_Seq=3)
+    """
+    if state.df_ops is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        job_id = request.get('job_id')
+        operations = request.get('operations', [])
+        
+        if not job_id:
+            raise HTTPException(status_code=400, detail="Job ID is required")
+        
+        if not operations:
+            raise HTTPException(status_code=400, detail="At least one operation is required")
+        
+        # Check if job already exists
+        if job_id in state.df_ops['Job_ID'].values:
+            raise HTTPException(status_code=400, detail=f"Job {job_id} already exists")
+        
+        # Create new operations with proper sequence handling
+        new_ops = []
+        for i, op in enumerate(operations):
+            op_id = f"{job_id}_OP{i+1}"
+            new_op = {
+                'Job_ID': job_id,
+                'Operation_ID': op_id,
+                'Op_Seq': i + 1,  # Critical: Operations execute in this order
+                'Operation_Type': op.get('operation_type', 'Drilling'),
+                'Total_Proc_Min': op.get('proc_time', 60),
+                'Setup_Time': op.get('setup_time', 10),
+                'Transfer_Min': op.get('transfer_time', 5),
+                'Quantity': op.get('quantity', 1),
+                'Release_Day': op.get('release_day', 0),
+                'Due_Day': op.get('due_day', 10),
+                'Priority': op.get('priority', 'Medium'),
+                'Vendor_Ref': op.get('vendor_ref', 'V1'),
+                'Outsource_Cost': op.get('outsource_cost', 0),
+                'Outsource_Time_Min': op.get('outsource_time', 0),
+                'Release_Time_Min': op.get('release_day', 0) * 480,
+                'Due_Time_Min': op.get('due_day', 10) * 480,
+                'Completion_Day': 0,
+            }
+            new_ops.append(new_op)
+        
+        # Add to dataframe
+        new_df = pd.DataFrame(new_ops)
+        state.df_ops = pd.concat([state.df_ops, new_df], ignore_index=True)
+        
+        # Update effective times for new operations
+        new_effective = []
+        for op in new_ops:
+            op_type = op['Operation_Type']
+            eligible_machines = get_eligible_machines(op_type)
+            for machine_id in eligible_machines:
+                machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id]
+                if len(machine_row) > 0:
+                    speed_factor = machine_row.iloc[0]['Speed_Factor']
+                    effective_proc_time = op['Total_Proc_Min'] / speed_factor
+                    total_time = op['Setup_Time'] + effective_proc_time + op['Transfer_Min']
+                    new_effective.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': machine_id,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+        
+        if new_effective:
+            new_eff_df = pd.DataFrame(new_effective)
+            state.df_effective = pd.concat([state.df_effective, new_eff_df], ignore_index=True)
+        
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Job Added',
+            'details': f"Job: {job_id}, Added {len(new_ops)} operations"
+        })
+        
+        return {
+            "status": "success",
+            "message": f"Added job {job_id} with {len(new_ops)} operations",
+            "operations_added": len(new_ops)
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -839,7 +1095,12 @@ def delete_job(job_id: str):
 
 # Initialize Excel ingestor and schema mapper
 excel_ingestor = ExcelIngestor()
-schema_mapper = SchemaMapper(gemini_model if AI_ENABLED else None)
+# Use OpenRouter (same as AI insights) if available, otherwise Gemini
+schema_mapper = SchemaMapper(
+    gemini_model=gemini_model if AI_ENABLED else None,
+    openrouter_api_key=OPENROUTER_API_KEY if AI_PROVIDER == 'openrouter' else None,
+    use_openrouter=(AI_PROVIDER == 'openrouter')
+)
 
 @app.post("/api/excel/upload")
 async def upload_excel(file: UploadFile = File(...)):
@@ -1012,14 +1273,40 @@ async def load_excel_and_schedule(
         
         # Convert jobs to DataFrame format for scheduler (TEMPORARY - NOT GLOBAL STATE)
         jobs_data = []
+        
+        # Find earliest date as reference (time zero)
+        all_dates = []
         for job in jobs:
-            # Handle due_date - convert datetime to days or use numeric value
-            due_day = 999
+            if job.release_date and hasattr(job.release_date, 'date'):
+                all_dates.append(job.release_date)
+            if job.due_date and hasattr(job.due_date, 'date'):
+                all_dates.append(job.due_date)
+        
+        reference_date = min(all_dates).date() if all_dates else None
+        print(f"[Excel Schedule] Reference date (time zero): {reference_date}")
+        
+        for job in jobs:
+            # Handle due_date - convert datetime to days from reference
+            due_day = 30  # default 30 days if no due date
             if job.due_date:
                 if isinstance(job.due_date, (int, float)):
                     due_day = job.due_date
-                elif hasattr(job.due_date, 'day'):
-                    due_day = job.due_date.day
+                elif hasattr(job.due_date, 'date'):
+                    if reference_date:
+                        due_day = (job.due_date.date() - reference_date).days
+                    else:
+                        due_day = 30
+            
+            # Handle release_date - convert datetime to days from reference
+            release_day = 0
+            if job.release_date:
+                if isinstance(job.release_date, (int, float)):
+                    release_day = job.release_date
+                elif hasattr(job.release_date, 'date'):
+                    if reference_date:
+                        release_day = (job.release_date.date() - reference_date).days
+                    else:
+                        release_day = 0
             
             # Handle priority - convert to numeric
             priority = 3  # default medium priority
@@ -1044,8 +1331,8 @@ async def load_excel_and_schedule(
                 'Op_Type': job.metadata.get('op_type', 'MILLING') if job.metadata else 'MILLING',
                 'Part_Type': job.part_type or 'A',
                 'Transfer_Min': 5,
-                'Release_Day': 0,
-                'Release_Time_Min': 0,  # Available immediately
+                'Release_Day': release_day,
+                'Release_Time_Min': release_day * 480,  # Convert days to minutes (8-hour workday)
                 'Outsource_Flag': 'Y' if job.can_outsource else 'N',
                 'Vendor_Ref': job.vendor_id or '',
             })

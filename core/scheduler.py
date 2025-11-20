@@ -189,7 +189,9 @@ class CNCScheduler:
             'Proc_Time': eff_time,
             'Transfer_Time': transfer_time,
             'Due_Time': operation.get('Due_Time_Min', 0),
-            'Tardiness': max(0, end_time - operation.get('Due_Time_Min', 0))
+            'Tardiness': max(0, end_time - operation.get('Due_Time_Min', 0)),
+            'Priority': operation.get('Priority', 3),
+            'Assignment_Type': operation.get('Assignment_Type', 'IN_HOUSE')
         })
 
         # Set machine availability to the NEXT safe time after this job
@@ -257,39 +259,46 @@ class CNCScheduler:
 
         # Selection logic based on heuristic
         if heuristic == 'SPT':
+            # Shortest Processing Time - schedule shortest jobs first
             op, earliest_start = min(
                 available_ops,
-                key=lambda x: (safe_priority(x[0]), x[0]['Total_Proc_Min'], x[0]['Due_Time_Min'])
+                key=lambda x: (x[0]['Total_Proc_Min'], x[0]['Due_Time_Min'])
             )
         elif heuristic == 'EDD':
+            # Earliest Due Date - schedule jobs with nearest deadlines first
+            op, earliest_start = min(
+                available_ops,
+                key=lambda x: (x[0]['Due_Time_Min'], x[0]['Total_Proc_Min'])
+            )
+        elif heuristic == 'CR':
+            # Critical Ratio - schedule based on due_date/processing_time ratio
+            op, earliest_start = min(
+                available_ops,
+                key=lambda x: (x[0]['Due_Time_Min'] / max(x[0]['Total_Proc_Min'], 1), x[0]['Total_Proc_Min'])
+            )
+        elif heuristic == 'PRIORITY':
+            # Priority-based - ONLY this heuristic uses job priority as primary criterion
             op, earliest_start = min(
                 available_ops,
                 key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'], x[0]['Total_Proc_Min'])
             )
-        elif heuristic == 'CR':
-            op, earliest_start = min(
-                available_ops,
-                key=lambda x: (safe_priority(x[0]), (x[0]['Due_Time_Min'] / max(x[0]['Total_Proc_Min'], 1)))
-            )
-        elif heuristic == 'PRIORITY':
-            op, earliest_start = min(
-                available_ops,
-                key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'])
-            )
-        elif heuristic == 'BALANCED':
+        elif heuristic == 'WEIGHTED' or heuristic == 'BALANCED':
+            # Multi-objective - balances priority, slack, and processing time with weights
             op, earliest_start = min(
                 available_ops,
                 key=lambda x: calculate_weighted_score(x[0])
             )
-        elif heuristic == 'DEADLINE_FIRST':
+        elif heuristic == 'SLACK' or heuristic == 'DEADLINE_FIRST':
+            # Minimum slack time - schedule jobs with least time buffer first
             op, earliest_start = min(
                 available_ops,
-                key=lambda x: (safe_priority(x[0]), calculate_slack(x[0]), x[0]['Total_Proc_Min'])
+                key=lambda x: (calculate_slack(x[0]), x[0]['Total_Proc_Min'])
             )
         else:
+            # Default fallback to SPT
             op, earliest_start = min(
                 available_ops,
-                key=lambda x: (safe_priority(x[0]), x[0]['Total_Proc_Min'])
+                key=lambda x: (x[0]['Total_Proc_Min'], x[0]['Due_Time_Min'])
             )
 
         return op, earliest_start

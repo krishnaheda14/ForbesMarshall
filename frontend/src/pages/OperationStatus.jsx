@@ -125,6 +125,8 @@ function OperationStatus() {
                 <TableRow>
                   <TableCell><strong>Job ID</strong></TableCell>
                   <TableCell><strong>Operation ID</strong></TableCell>
+                  <TableCell><strong>Priority</strong></TableCell>
+                  <TableCell><strong>Assignment</strong></TableCell>
                   <TableCell><strong>Machine</strong></TableCell>
                   <TableCell align="right"><strong>Start (min)</strong></TableCell>
                   <TableCell align="right"><strong>End (min)</strong></TableCell>
@@ -135,11 +137,46 @@ function OperationStatus() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filteredOperations.map((op, index) => (
-                  <TableRow key={index}>
-                    <TableCell>{op.Job_ID}</TableCell>
+                {filteredOperations.map((op, index) => {
+                  const getPriorityColor = (priority) => {
+                    const p = typeof priority === 'string' ? priority.toLowerCase() : String(priority);
+                    if (p === 'high' || p === '1') return 'error';
+                    if (p === 'medium' || p === '2' || p === '3') return 'warning';
+                    return 'default';
+                  };
+                  const getPriorityLabel = (priority) => {
+                    const p = typeof priority === 'string' ? priority : String(priority);
+                    if (p === '1') return 'High';
+                    if (p === '2') return 'Medium';
+                    if (p === '3') return 'Low';
+                    if (p === '4') return 'Very Low';
+                    return p;
+                  };
+                  const assignmentType = op.Assignment_Type || (op.Machine_ID ? 'IN_HOUSE' : 'OUTSOURCE');
+                  const isOutsourced = assignmentType === 'OUTSOURCE';
+                  
+                  return (
+                  <TableRow key={index} sx={{ '&:hover': { bgcolor: 'action.hover' } }}>
+                    <TableCell><strong>{op.Job_ID}</strong></TableCell>
                     <TableCell>{op.Operation_ID}</TableCell>
-                    <TableCell>{op.Machine_ID}</TableCell>
+                    <TableCell>
+                      <Chip
+                        label={getPriorityLabel(op.Priority || '3')}
+                        color={getPriorityColor(op.Priority || '3')}
+                        size="small"
+                        sx={{ fontWeight: 'bold' }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        label={isOutsourced ? 'Outsourced' : 'In-House'}
+                        color={isOutsourced ? 'secondary' : 'primary'}
+                        size="small"
+                        variant={isOutsourced ? 'filled' : 'outlined'}
+                        sx={{ fontWeight: 'bold' }}
+                      />
+                    </TableCell>
+                    <TableCell>{op.Machine_ID || '—'}</TableCell>
                     <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
                     <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
                     <TableCell align="right">
@@ -147,7 +184,9 @@ function OperationStatus() {
                     </TableCell>
                     <TableCell align="right">{op.Due_Time?.toFixed(0)}</TableCell>
                     <TableCell align="right">
-                      {op.Tardiness > 0 ? op.Tardiness.toFixed(0) : '0'}
+                      <span style={{ color: op.Tardiness > 0 ? '#d32f2f' : '#2e7d32', fontWeight: 'bold' }}>
+                        {op.Tardiness > 0 ? op.Tardiness.toFixed(0) : '0'}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <Chip
@@ -157,7 +196,7 @@ function OperationStatus() {
                       />
                     </TableCell>
                   </TableRow>
-                ))}
+                )})}
               </TableBody>
             </Table>
           </TableContainer>

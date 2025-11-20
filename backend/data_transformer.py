@@ -17,6 +17,7 @@ class DataTransformer:
     def __init__(self):
         self.errors = []
         self.warnings = []
+        self._unit_warning_shown = False
         
     def transform(
         self, 
@@ -74,7 +75,20 @@ class DataTransformer:
         
         # Required fields
         job_data['job_id'] = self._get_value(row, reverse_map, 'job_id', required=True)
-        job_data['processing_time'] = self._get_numeric(row, reverse_map, 'processing_time', required=True)
+        
+        # Processing time with unit detection
+        processing_time = self._get_numeric(row, reverse_map, 'processing_time', required=True)
+        
+        # Auto-detect units: if column name contains 'hrs' or 'hours' or values are small (< 24), assume hours
+        if 'processing_time' in reverse_map:
+            col_name = reverse_map['processing_time'].lower()
+            if ('hr' in col_name or 'hour' in col_name) or (processing_time < 24):
+                processing_time = processing_time * 60  # Convert hours to minutes
+                if not hasattr(self, '_unit_warning_shown'):
+                    self.warnings.append(f"Detected processing time in hours, converting to minutes")
+                    self._unit_warning_shown = True
+        
+        job_data['processing_time'] = processing_time
         
         # Optional core fields
         job_data['operation_id'] = self._get_value(row, reverse_map, 'operation_id')
