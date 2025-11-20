@@ -55,18 +55,6 @@ function ComputeControls() {
       
       enqueueSnackbar('Starting computation of all heuristics...', { variant: 'info' });
       
-      // Simulate progress for each heuristic
-      for (let i = 0; i < HEURISTICS.length; i++) {
-        const heuristic = HEURISTICS[i];
-        setComputeProgress(prev => ({
-          ...prev,
-          current: heuristic.name,
-        }));
-        
-        // Small delay to show the current heuristic
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      
       const result = await computeAllHeuristics();
       
       setComputeProgress(prev => ({

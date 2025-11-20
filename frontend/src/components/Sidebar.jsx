@@ -25,6 +25,7 @@ import {
   ExpandLess,
   PlayArrow,
   CloudUpload as UploadIcon,
+  AttachMoney as CostIcon,
 } from '@mui/icons-material';
 
 import HeuristicSelector from './HeuristicSelector';
@@ -39,6 +40,7 @@ const menuItems = [
   { text: 'Comparison', icon: <ComparisonIcon />, path: '/comparison' },
   { text: 'Gantt Chart', icon: <GanttIcon />, path: '/gantt' },
   { text: 'Operations', icon: <OperationsIcon />, path: '/operations' },
+  { text: 'Cost Analysis', icon: <CostIcon />, path: '/cost-analysis' },
   { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
 ];
 

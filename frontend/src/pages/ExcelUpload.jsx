@@ -22,14 +22,25 @@ import {
   FormControl,
   InputLabel,
   Chip,
+  Card,
+  CardContent,
+  Grid,
+  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
   AutoFixHigh as AutoMapIcon,
   CheckCircle as ConfirmIcon,
+  Psychology as AIIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import axios from 'axios';
+import Plot from 'react-plotly.js';
 
 const steps = ['Upload Excel', 'Map Columns', 'Confirm & Load'];
 
@@ -52,6 +63,10 @@ function ExcelUpload() {
   
   // Step 3: Results
   const [transformResult, setTransformResult] = useState(null);
+  const [scheduleResult, setScheduleResult] = useState(null);
+  const [selectedHeuristic, setSelectedHeuristic] = useState(null);
+  const [aiInsightsOpen, setAiInsightsOpen] = useState(false);
+  const [aiInsights, setAiInsights] = useState('');
 
   const handleFileSelect = (event) => {
     const selectedFile = event.target.files[0];
@@ -188,18 +203,62 @@ function ExcelUpload() {
       
       const response = await axios.post(`${API_BASE}/api/excel/load-and-schedule`, formData);
       
+      setSelectedHeuristic(heuristic);
+      setScheduleResult(response.data);
+      
       enqueueSnackbar(
         `Scheduled ${response.data.job_count} jobs using ${heuristic}!`, 
         { variant: 'success' }
       );
       
-      // Navigate to dashboard or Gantt view
-      setTimeout(() => {
-        window.location.href = '/';
-      }, 1500);
-      
     } catch (error) {
       enqueueSnackbar(`Scheduling failed: ${error.response?.data?.detail || error.message}`, { 
+        variant: 'error' 
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleComputeAllHeuristics = async () => {
+    setLoading(true);
+    try {
+      const response = await axios.post(`${API_BASE}/api/schedule/compute-all`);
+      
+      enqueueSnackbar('All heuristics computed successfully!', { variant: 'success' });
+      
+      // Fetch comparison data
+      const comparisonResponse = await axios.get(`${API_BASE}/api/metrics/comparison`);
+      setScheduleResult({
+        ...scheduleResult,
+        allMetrics: comparisonResponse.data.results
+      });
+      
+    } catch (error) {
+      enqueueSnackbar(`Failed to compute: ${error.response?.data?.detail || error.message}`, { 
+        variant: 'error' 
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGetAIInsights = async () => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API_BASE}/api/metrics/comparison`);
+      const metricsData = response.data.results;
+      
+      const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
+        prompt: `Analyze these scheduling results and recommend the best heuristic:\n${JSON.stringify(metricsData, null, 2)}`,
+        context_data: metricsData
+      });
+      
+      setAiInsights(aiResponse.data.response);
+      setAiInsightsOpen(true);
+      
+    } catch (error) {
+      enqueueSnackbar(`AI insights failed: ${error.response?.data?.detail || error.message}`, { 
         variant: 'error' 
       });
     } finally {
@@ -494,6 +553,8 @@ function ExcelUpload() {
                 setColumns([]);
                 setMappings({});
                 setTransformResult(null);
+                setScheduleResult(null);
+                setSelectedHeuristic(null);
               }}
               sx={{ mt: 2, alignSelf: 'flex-start' }}
             >
@@ -502,6 +563,215 @@ function ExcelUpload() {
           </Box>
         </Paper>
       )}
+
+      {/* Step 4: Schedule Results with Gantt Chart */}
+      {scheduleResult && (
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <Typography variant="h5" gutterBottom>
+            📊 Scheduling Results - {selectedHeuristic}
+          </Typography>
+
+          <Alert severity="success" sx={{ mb: 3 }}>
+            Successfully scheduled {scheduleResult.job_count} jobs using {selectedHeuristic} algorithm!
+          </Alert>
+
+          {/* KPI Cards */}
+          <Grid container spacing={2} sx={{ mb: 3 }}>
+            <Grid item xs={12} md={3}>
+              <Card sx={{ bgcolor: '#e3f2fd' }}>
+                <CardContent>
+                  <Typography variant="caption" color="text.secondary">
+                    Total Makespan
+                  </Typography>
+                  <Typography variant="h5">
+                    {scheduleResult.metrics?.makespan?.toFixed(0) || 'N/A'} min
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <Card sx={{ bgcolor: '#f3e5f5' }}>
+                <CardContent>
+                  <Typography variant="caption" color="text.secondary">
+                    Avg Completion Time
+                  </Typography>
+                  <Typography variant="h5">
+                    {scheduleResult.metrics?.avg_completion?.toFixed(0) || 'N/A'} min
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <Card sx={{ bgcolor: '#fff3e0' }}>
+                <CardContent>
+                  <Typography variant="caption" color="text.secondary">
+                    Total Tardiness
+                  </Typography>
+                  <Typography variant="h5">
+                    {scheduleResult.metrics?.total_tardiness?.toFixed(0) || 'N/A'} min
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <Card sx={{ bgcolor: '#e8f5e9' }}>
+                <CardContent>
+                  <Typography variant="caption" color="text.secondary">
+                    Machine Utilization
+                  </Typography>
+                  <Typography variant="h5">
+                    {scheduleResult.metrics?.utilization?.toFixed(1) || 'N/A'}%
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+
+          {/* Gantt Chart */}
+          {scheduleResult.schedule && scheduleResult.schedule.length > 0 && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  📈 Gantt Chart Visualization
+                </Typography>
+                <Plot
+                  data={scheduleResult.schedule.map((item) => ({
+                    x: [item.Start_Time, item.End_Time],
+                    y: [item.Machine_ID, item.Machine_ID],
+                    type: 'line',
+                    mode: 'lines',
+                    line: { width: 20, color: '#1976d2' },
+                    name: `${item.Job_ID} - ${item.Operation_ID}`,
+                    hovertemplate:
+                      `<b>Machine:</b> ${item.Machine_ID}<br>` +
+                      `<b>Job:</b> ${item.Job_ID}<br>` +
+                      `<b>Operation:</b> ${item.Operation_ID}<br>` +
+                      `<b>Start:</b> ${item.Start_Time} min<br>` +
+                      `<b>End:</b> ${item.End_Time} min<br>` +
+                      `<b>Duration:</b> ${item.End_Time - item.Start_Time} min<extra></extra>`,
+                  }))}
+                  layout={{
+                    title: `${selectedHeuristic} Schedule - Excel Data`,
+                    xaxis: {
+                      title: 'Time (minutes)',
+                      showgrid: true,
+                      zeroline: false,
+                    },
+                    yaxis: {
+                      title: 'Machine',
+                      autorange: 'reversed',
+                    },
+                    height: 500,
+                    showlegend: false,
+                  }}
+                  style={{ width: '100%' }}
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Action Buttons */}
+          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+            <Button
+              variant="contained"
+              startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
+              onClick={handleComputeAllHeuristics}
+              disabled={loading}
+              sx={{ backgroundColor: '#6366f1', '&:hover': { backgroundColor: '#4f46e5' } }}
+            >
+              Compute All Heuristics
+            </Button>
+
+            <Button
+              variant="contained"
+              startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <AIIcon />}
+              onClick={handleGetAIInsights}
+              disabled={loading}
+              sx={{ backgroundColor: '#ec4899', '&:hover': { backgroundColor: '#db2777' } }}
+            >
+              AI Insights & Comparison
+            </Button>
+
+            <Button
+              variant="outlined"
+              onClick={() => {
+                setActiveStep(0);
+                setFile(null);
+                setColumns([]);
+                setMappings({});
+                setTransformResult(null);
+                setScheduleResult(null);
+                setSelectedHeuristic(null);
+              }}
+            >
+              Upload Another File
+            </Button>
+          </Box>
+
+          {/* All Heuristics Comparison Table */}
+          {scheduleResult.allMetrics && (
+            <Box sx={{ mt: 3 }}>
+              <Divider sx={{ my: 3 }} />
+              <Typography variant="h6" gutterBottom>
+                📊 Heuristics Comparison
+              </Typography>
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell><strong>Heuristic</strong></TableCell>
+                      <TableCell align="right"><strong>Makespan (min)</strong></TableCell>
+                      <TableCell align="right"><strong>Avg Completion (min)</strong></TableCell>
+                      <TableCell align="right"><strong>Total Tardiness (min)</strong></TableCell>
+                      <TableCell align="right"><strong>Utilization (%)</strong></TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {Object.entries(scheduleResult.allMetrics).map(([heuristic, metrics]) => (
+                      <TableRow 
+                        key={heuristic}
+                        sx={{ 
+                          bgcolor: heuristic === selectedHeuristic ? '#e3f2fd' : 'transparent',
+                          fontWeight: heuristic === selectedHeuristic ? 'bold' : 'normal'
+                        }}
+                      >
+                        <TableCell>{heuristic}</TableCell>
+                        <TableCell align="right">{metrics.makespan?.toFixed(0) || 'N/A'}</TableCell>
+                        <TableCell align="right">{metrics.avg_completion?.toFixed(0) || 'N/A'}</TableCell>
+                        <TableCell align="right">{metrics.total_tardiness?.toFixed(0) || 'N/A'}</TableCell>
+                        <TableCell align="right">{metrics.utilization?.toFixed(1) || 'N/A'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Box>
+          )}
+        </Paper>
+      )}
+
+      {/* AI Insights Dialog */}
+      <Dialog 
+        open={aiInsightsOpen} 
+        onClose={() => setAiInsightsOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <AIIcon color="primary" />
+            <Typography variant="h6">AI Insights & Recommendations</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
+            {aiInsights || 'Analyzing scheduling results...'}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAiInsightsOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 }

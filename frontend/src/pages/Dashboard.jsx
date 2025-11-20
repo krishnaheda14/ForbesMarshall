@@ -56,7 +56,7 @@ function Dashboard() {
       setLoading(true);
       enqueueSnackbar('Loading dataset...', { variant: 'info' });
       
-      const result = await loadData();
+      const result = await loadData(50);
       
       setDataLoaded(true, result.stats);
       enqueueSnackbar('Data loaded successfully!', { variant: 'success' });

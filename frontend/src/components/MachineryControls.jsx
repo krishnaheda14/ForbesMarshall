@@ -57,9 +57,10 @@ function MachineryControls() {
     
     try {
       await updateJobPriority(jobId, priority);
-      enqueueSnackbar('Priority updated. Recompute to see changes.', {
-        variant: 'success',
-      });
+      enqueueSnackbar(
+        `✅ Priority updated for ${jobId} to ${priority}. Check Operation Status tab to verify!`,
+        { variant: 'success', autoHideDuration: 5000 }
+      );
     } catch (error) {
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
         variant: 'error',

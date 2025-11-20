@@ -8,30 +8,38 @@ import {
   Box,
   Alert,
   CircularProgress,
+  Button,
+  Chip,
 } from '@mui/material';
+import { Refresh as RefreshIcon } from '@mui/icons-material';
 import Plot from 'react-plotly.js';
 import useSchedulerStore from '../store/useSchedulerStore';
-import { getCurrentSchedule } from '../services/api';
+import { getCurrentSchedule, getMachineData } from '../services/api';
 
 function GanttView() {
   const { currentHeuristic, currentSchedule, setCurrentSchedule } = useSchedulerStore();
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // Start with true to show loading state
   const [maintenanceData, setMaintenanceData] = useState([]);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (currentHeuristic) {
       fetchSchedule();
       fetchMaintenanceData();
+    } else {
+      setLoading(false); // No heuristic selected, stop loading
     }
   }, [currentHeuristic]);
 
   const fetchSchedule = async () => {
     try {
       setLoading(true);
+      setError(null);
       const result = await getCurrentSchedule();
       setCurrentSchedule(result.schedule);
     } catch (error) {
-      // Expected if no schedule
+      console.error('Failed to fetch schedule:', error);
+      setError(error.response?.data?.detail || 'Failed to load schedule data');
     } finally {
       setLoading(false);
     }
@@ -67,26 +75,89 @@ function GanttView() {
     }
   };
 
+  // Loading state
+  if (loading) {
+    return (
+      <Container maxWidth="xl">
+        <Typography variant="h1" gutterBottom>
+          📈 Gantt Chart
+        </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 8 }}>
+          <CircularProgress size={60} sx={{ mb: 3 }} />
+          <Typography variant="h6" color="text.secondary">
+            {currentHeuristic ? `Loading ${currentHeuristic} schedule...` : 'Loading...'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Please wait while we fetch the scheduling data
+          </Typography>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <Container maxWidth="xl">
+        <Typography variant="h1" gutterBottom>
+          📈 Gantt Chart
+        </Typography>
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+        <Alert severity="info">
+          Please compute a heuristic from the Dashboard first.
+        </Alert>
+      </Container>
+    );
+  }
+
+  // No data state
   if (!currentHeuristic || !currentSchedule || currentSchedule.length === 0) {
     return (
       <Container maxWidth="xl">
         <Typography variant="h1" gutterBottom>
           📈 Gantt Chart
         </Typography>
-        <Alert severity="info">
-          No schedule data available. Please apply a heuristic from the Dashboard.
+        <Alert severity="info" sx={{ mb: 2 }}>
+          No schedule data available. Please follow these steps:
         </Alert>
+        <Box sx={{ mt: 2, p: 3, bgcolor: '#f5f5f5', borderRadius: 2 }}>
+          <Typography variant="body1" gutterBottom>
+            <strong>Step 1:</strong> Load your dataset from the Dashboard
+          </Typography>
+          <Typography variant="body1" gutterBottom>
+            <strong>Step 2:</strong> Click "Compute All Heuristics" or select a specific heuristic
+          </Typography>
+          <Typography variant="body1">
+            <strong>Step 3:</strong> The Gantt chart will automatically display here
+          </Typography>
+        </Box>
       </Container>
     );
   }
 
-  // Prepare Gantt chart data for operations
+  // Generate unique colors for each job
+  const getJobColor = (jobId) => {
+    const colors = [
+      '#1976d2', '#d32f2f', '#388e3c', '#f57c00', '#7b1fa2',
+      '#0097a7', '#c2185b', '#5d4037', '#455a64', '#e64a19',
+      '#00796b', '#303f9f', '#c62828', '#6a1b9a', '#0277bd'
+    ];
+    let hash = 0;
+    for (let i = 0; i < jobId.length; i++) {
+      hash = jobId.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return colors[Math.abs(hash) % colors.length];
+  };
+
+  // Prepare Gantt chart data for operations with colorful jobs
   const ganttData = currentSchedule.map((item) => ({
     x: [item.Start_Time, item.End_Time],
     y: [item.Machine_ID, item.Machine_ID],
     type: 'line',
     mode: 'lines',
-    line: { width: 20, color: '#1976d2' },
+    line: { width: 20, color: getJobColor(item.Job_ID) },
     name: `${item.Job_ID} - ${item.Operation_ID}`,
     hovertemplate:
       `<b>Machine:</b> ${item.Machine_ID}<br>` +
@@ -94,7 +165,9 @@ function GanttView() {
       `<b>Operation:</b> ${item.Operation_ID}<br>` +
       `<b>Start:</b> ${item.Start_Time} min<br>` +
       `<b>End:</b> ${item.End_Time} min<br>` +
-      `<b>Duration:</b> ${item.End_Time - item.Start_Time} min<extra></extra>`,
+      `<b>Duration:</b> ${item.End_Time - item.Start_Time} min` +
+      (item.Priority ? `<br><b>Priority:</b> ${item.Priority}` : '') +
+      `<extra></extra>`,
   }));
 
   // Add maintenance windows (breakdowns) to Gantt chart
@@ -130,14 +203,40 @@ function GanttView() {
     showlegend: false,
   };
 
+  const handleRefresh = async () => {
+    await fetchSchedule();
+    await fetchMaintenanceData();
+  };
+
   return (
     <Container maxWidth="xl">
-      <Typography variant="h1" gutterBottom>
-        📈 Gantt Chart
-      </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        Visualizing {currentHeuristic} schedule across machines
-      </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Box>
+          <Typography variant="h1" gutterBottom>
+            📈 Gantt Chart
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            Visualizing {currentHeuristic} schedule across machines
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+          {maintenanceData.length > 0 && (
+            <Chip 
+              label={`${maintenanceData.length} Breakdown${maintenanceData.length > 1 ? 's' : ''}`} 
+              color="error" 
+              size="small"
+            />
+          )}
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={handleRefresh}
+            disabled={loading}
+          >
+            Refresh
+          </Button>
+        </Box>
+      </Box>
 
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
@@ -149,7 +248,7 @@ function GanttView() {
             <Plot data={allTraces} layout={layout} style={{ width: '100%' }} />
 
             <Alert severity="info" sx={{ mt: 2 }}>
-              <strong>Tip:</strong> Hover over bars to see operation details. Blue bars are scheduled operations, red dotted bars are breakdowns/maintenance.
+              <strong>Tip:</strong> Hover over bars to see operation details. Each job has a unique color. Red dotted bars indicate breakdowns/maintenance windows.
             </Alert>
           </CardContent>
         </Card>

@@ -12,6 +12,7 @@ import GanttView from './pages/GanttView';
 import OperationStatus from './pages/OperationStatus';
 import Settings from './pages/Settings';
 import ExcelUpload from './pages/ExcelUpload';
+import CostAnalysis from './pages/CostAnalysis';
 
 const theme = createTheme({
   palette: {
@@ -114,6 +115,7 @@ function App() {
                   <Route path="/comparison" element={<Comparison />} />
                   <Route path="/gantt" element={<GanttView />} />
                   <Route path="/operations" element={<OperationStatus />} />
+                  <Route path="/cost-analysis" element={<CostAnalysis />} />
                   <Route path="/settings" element={<Settings />} />
                 </Routes>
               </Box>

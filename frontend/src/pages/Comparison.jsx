@@ -42,8 +42,19 @@ function Comparison() {
     try {
       setLoading(true);
       const result = await getMetricsComparison();
-      setMetrics(result.metrics);
+      
+      // Convert array to object with heuristic names as keys
+      if (result.metrics && Array.isArray(result.metrics)) {
+        const metricsObj = {};
+        result.metrics.forEach((m) => {
+          if (m.Heuristic) {
+            metricsObj[m.Heuristic] = { metrics: m };
+          }
+        });
+        setMetrics(metricsObj);
+      }
     } catch (error) {
+      console.error('Failed to fetch metrics:', error);
       // Expected if no metrics computed yet
     } finally {
       setLoading(false);

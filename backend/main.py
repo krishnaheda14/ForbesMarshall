@@ -1,5 +1,5 @@
 # backend/main.py
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -40,8 +40,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:5173"],  # React dev servers
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # Configure Gemini AI
@@ -76,6 +78,13 @@ state = AppState()
 # Pydantic models
 class LoadDataRequest(BaseModel):
     sample_size: Optional[int] = None
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "sample_size": None
+            }
+        }
 
 class ComputeHeuristicRequest(BaseModel):
     heuristic: str
@@ -113,6 +122,7 @@ def load_all_data(sample_size=None):
     data_dir = os.path.join(base_dir, 'data')
     
     try:
+        # Use jobs_dataset.csv for normal operations
         df_ops = pd.read_csv(os.path.join(data_dir, 'jobs_dataset.csv'))
         df_machines = pd.read_csv(os.path.join(data_dir, 'machine_data.csv'))
         df_vendors = pd.read_csv(os.path.join(data_dir, 'vendor_data.csv'))
@@ -250,10 +260,11 @@ def read_root():
     return {"message": "CNC Scheduling API v2.0", "status": "running"}
 
 @app.post("/api/data/load")
-def load_data(request: LoadDataRequest):
+async def load_data(request: LoadDataRequest = Body(default=LoadDataRequest(sample_size=None))):
     """Load and initialize dataset"""
     try:
-        df_ops, df_machines, df_effective, df_penalties, df_vendors = load_all_data(request.sample_size)
+        sample_size = request.sample_size
+        df_ops, df_machines, df_effective, df_penalties, df_vendors = load_all_data(sample_size)
         
         state.df_ops = df_ops
         state.df_machines = df_machines
@@ -433,12 +444,19 @@ def get_current_schedule():
 def simulate_breakdown(request: MachineBreakdownRequest):
     """Simulate machine breakdown"""
     if state.df_machines is None:
-        raise HTTPException(status_code=400, detail="Data not loaded")
+        raise HTTPException(
+            status_code=400, 
+            detail="Data not loaded. Please load dataset first by clicking 'Load Dataset' button on the Dashboard."
+        )
     
     try:
         machine_idx = state.df_machines[state.df_machines['Machine_ID'] == request.machine_id].index
         if len(machine_idx) == 0:
-            raise HTTPException(status_code=404, detail="Machine not found")
+            available_machines = state.df_machines['Machine_ID'].tolist()
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Machine '{request.machine_id}' not found. Available machines: {', '.join(available_machines[:10])}"
+            )
         
         idx = machine_idx[0]
         existing_maint = state.df_machines.at[idx, 'Maintenance_Window']
@@ -577,6 +595,72 @@ def get_metrics_comparison():
         "status": "success",
         "metrics": list(state.metrics.values())
     }
+
+@app.post("/api/analysis/hourly-cost")
+def analyze_hourly_cost(request: dict):
+    """Analyze cost impact of different hourly rates"""
+    if state.df_ops is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        heuristic = request.get('heuristic', 'SPT')
+        hourly_rates = request.get('hourly_rates', [20, 25, 30, 35, 40, 45, 50, 60, 70, 80])
+        
+        results = []
+        
+        for rate in hourly_rates:
+            # Simple cost calculation based on processing time
+            total_proc_time_hours = state.df_ops['Total_Proc_Min'].sum() / 60
+            inhouse_cost = total_proc_time_hours * rate
+            
+            # Outsource simulation (simple threshold-based)
+            # Operations where outsource cost < 85% of in-house cost
+            outsourced_ops = 0
+            outsource_cost = 0
+            
+            for idx, op in state.df_ops.iterrows():
+                op_inhouse_cost = (op['Total_Proc_Min'] / 60) * rate
+                op_outsource_cost = op.get('Outsource_Cost', 0)
+                
+                if op_outsource_cost > 0 and op_outsource_cost < (op_inhouse_cost * 0.85):
+                    outsourced_ops += 1
+                    outsource_cost += op_outsource_cost
+                    inhouse_cost -= op_inhouse_cost
+            
+            inhouse_ops = len(state.df_ops) - outsourced_ops
+            outsourcing_pct = (outsourced_ops / len(state.df_ops)) * 100
+            total_cost = inhouse_cost + outsource_cost
+            
+            results.append({
+                'hourly_rate': rate,
+                'inhouse_cost': round(inhouse_cost, 2),
+                'outsource_cost': round(outsource_cost, 2),
+                'total_cost': round(total_cost, 2),
+                'outsourcing_pct': round(outsourcing_pct, 2),
+                'inhouse_ops': inhouse_ops,
+                'outsourced_ops': outsourced_ops
+            })
+        
+        # Find key metrics
+        lowest_cost = min(results, key=lambda x: x['total_cost'])
+        max_outsource = max(results, key=lambda x: x['outsourcing_pct'])
+        current_rate = next((r for r in results if r['hourly_rate'] == 30), results[0])
+        
+        return {
+            "status": "success",
+            "heuristic": heuristic,
+            "results": results,
+            "lowest_cost_rate": lowest_cost['hourly_rate'],
+            "lowest_cost": lowest_cost['total_cost'],
+            "max_outsource_rate": max_outsource['hourly_rate'],
+            "max_outsourcing": max_outsource['outsourcing_pct'],
+            "current_cost": current_rate['total_cost'],
+            "current_outsourcing": current_rate['outsourcing_pct'],
+            "total_operations": len(state.df_ops)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/job/{job_id}")
 def delete_job(job_id: str):
@@ -777,15 +861,127 @@ async def load_excel_and_schedule(
                 detail={"message": "No valid jobs found", "errors": errors}
             )
         
-        # For now, just return success - full integration would load into scheduler
+        # Convert jobs to DataFrame format for scheduler
+        jobs_data = []
+        for job in jobs:
+            # Handle due_date - convert datetime to days or use numeric value
+            due_day = 999
+            if job.due_date:
+                if isinstance(job.due_date, (int, float)):
+                    due_day = job.due_date
+                elif hasattr(job.due_date, 'day'):
+                    due_day = job.due_date.day
+            
+            # Handle priority - convert to numeric
+            priority = 3  # default medium priority
+            if job.priority_numeric:
+                priority = job.priority_numeric
+            elif job.priority:
+                priority_map = {'HIGH': 1, 'A': 1, 'MEDIUM': 3, 'B': 3, 'LOW': 5, 'C': 5}
+                priority = priority_map.get(str(job.priority).upper(), 3)
+            
+            jobs_data.append({
+                'Job_ID': job.job_id,
+                'Operation_ID': job.operation_id or f"{job.job_id}_Op1",
+                'Op_Seq': 1,  # Single operation per job from Excel
+                'Quantity': job.quantity or 1,
+                'Proc_Time_per_Unit': job.processing_time,
+                'Setup_Time': job.setup_time or 0,
+                'Due_Day': due_day,
+                'Priority': priority,
+                'Mat_Type': job.material_type or 'STEEL',
+                'Tool_Group': job.tool_group or 'TGA',
+                'Op_Type': job.metadata.get('op_type', 'MILLING') if job.metadata else 'MILLING',
+                'Part_Type': job.part_type or 'A',
+                'Transfer_Min': 5,
+                'Release_Day': 0,
+                'Outsource_Flag': 'Y' if job.can_outsource else 'N',
+                'Vendor_Ref': job.vendor_id or '',
+            })
+        
+        # Load into scheduler state
+        state.df_ops = pd.DataFrame(jobs_data)
+        state.df_ops['Total_Proc_Min'] = state.df_ops['Proc_Time_per_Unit'] * state.df_ops['Quantity']
+        
+        # Load other required data if not already loaded
+        if state.df_machines is None:
+            # Load all supporting data files
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            data_dir = os.path.join(base_dir, 'data')
+            
+            state.df_machines = pd.read_csv(os.path.join(data_dir, 'machine_data.csv'))
+            state.df_vendors = pd.read_csv(os.path.join(data_dir, 'vendor_data.csv'))
+            state.df_penalties = pd.read_csv(os.path.join(data_dir, 'previous_next_material.csv'))
+            
+            # Normalize column names
+            state.df_machines.columns = state.df_machines.columns.str.replace(' ', '_')
+            state.df_vendors.columns = state.df_vendors.columns.str.replace(' ', '_')
+            state.df_penalties.columns = state.df_penalties.columns.str.replace(' ', '_')
+            
+            # Process Speed_Factor
+            if 'Speed_Factor' not in state.df_machines.columns and 'SpeedFactor' in state.df_machines.columns:
+                state.df_machines.rename(columns={'SpeedFactor': 'Speed_Factor'}, inplace=True)
+            
+            state.df_machines['Speed_Factor'] = (
+                state.df_machines['Speed_Factor']
+                .astype(str)
+                .str.extract(r'([0-9]*\.?[0-9]+)')
+                .astype(float)
+            )
+            
+            # Parse maintenance windows
+            maintenance_col = 'Scheduled_Maintenance_(Day,_Time-Time)'
+            if maintenance_col in state.df_machines.columns:
+                state.df_machines['Maintenance_Window'] = state.df_machines[maintenance_col].apply(parse_maintenance)
+        
+        # Calculate effective times for Excel jobs
+        effective_times = []
+        for idx, op in state.df_ops.iterrows():
+            op_type = op.get('Op_Type', 'MILLING')
+            eligible_machines = get_eligible_machines(op_type)
+            for machine_id in eligible_machines:
+                machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id]
+                if len(machine_row) > 0:
+                    speed_factor = machine_row.iloc[0]['Speed_Factor']
+                    effective_proc_time = op['Total_Proc_Min'] / speed_factor
+                    total_time = op['Setup_Time'] + effective_proc_time + op.get('Transfer_Min', 0)
+                    effective_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': machine_id,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+        state.df_effective = pd.DataFrame(effective_times)
+        
+        # Run scheduling with selected heuristic
+        scheduler = CNCScheduler(
+            df_ops=state.df_ops,
+            df_machines=state.df_machines,
+            df_effective=state.df_effective,
+            df_penalties=state.df_penalties,
+            df_vendors=state.df_vendors,
+            cost_threshold=state.cost_threshold
+        )
+        
+        schedule = scheduler.schedule_jobs(heuristic=heuristic)
+        
+        # Calculate metrics
+        metrics = calculate_metrics(schedule, state.df_machines)
+        
+        # Store in state
+        state.schedules[heuristic] = schedule
+        state.metrics[heuristic] = metrics
+        state.current_heuristic = heuristic
+        
         return {
             "status": "success",
-            "message": f"Loaded {len(jobs)} jobs and ready to schedule with {heuristic}",
+            "message": f"Scheduled {len(jobs)} jobs using {heuristic}",
             "job_count": len(jobs),
             "heuristic": heuristic,
+            "schedule": schedule.to_dict('records'),
+            "metrics": metrics,
             "errors": errors,
-            "warnings": warnings,
-            "note": "Integration with main scheduler pending - jobs validated and ready"
+            "warnings": warnings
         }
         
     except HTTPException:
