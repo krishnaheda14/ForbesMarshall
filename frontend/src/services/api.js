@@ -124,6 +124,12 @@ export const getCurrentSchedule = async () => {
   return response.data;
 };
 
+export async function computeCPSATOptimal(objective_mode = 'min_weighted', alpha = 0.1, time_limit_seconds = 30) {
+  const payload = { objective_mode, alpha, time_limit_seconds };
+  const response = await api.post('/api/schedule/cpsat', payload);
+  return response.data;
+};
+
 // Machine Operations
 export const getMachineData = async () => {
   const response = await api.get('/api/data/machines');
