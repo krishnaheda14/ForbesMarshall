@@ -26,7 +26,7 @@ function MachineryControls() {
   
   // Breakdown state
   const [machineId, setMachineId] = useState('M1');
-  const [breakdownStart, setBreakdownStart] = useState(1000);
+  const [breakdownStart, setBreakdownStart] = useState(5000);
   const [breakdownDuration, setBreakdownDuration] = useState(240);
   
   // Priority state
@@ -126,8 +126,8 @@ function MachineryControls() {
           <Slider
             value={breakdownStart}
             onChange={(e, val) => setBreakdownStart(val)}
-            min={0}
-            max={100000}
+            min={5000}
+            max={20000}
             step={100}
             sx={{ mb: 1.5, color: 'white' }}
           />

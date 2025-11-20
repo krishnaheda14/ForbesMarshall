@@ -310,10 +310,13 @@ def get_data_info():
 def get_machine_data():
     """Get machine data including maintenance windows"""
     if state.df_machines is None:
-        raise HTTPException(status_code=400, detail="Data not loaded")
+        raise HTTPException(status_code=400, detail="Data not loaded. Please load data first from the Dashboard.")
     
-    machines = state.df_machines.to_dict('records')
-    return {"machines": machines}
+    try:
+        machines = state.df_machines.to_dict('records')
+        return {"machines": machines, "count": len(machines)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching machine data: {str(e)}")
 
 @app.post("/api/schedule/compute")
 def compute_heuristic(request: ComputeHeuristicRequest):
@@ -598,7 +601,7 @@ def get_metrics_comparison():
 
 @app.post("/api/analysis/hourly-cost")
 def analyze_hourly_cost(request: dict):
-    """Analyze cost impact of different hourly rates"""
+    """Analyze cost impact of different hourly rates with scheduling trade-offs"""
     if state.df_ops is None:
         raise HTTPException(status_code=400, detail="Data not loaded")
     
@@ -609,25 +612,57 @@ def analyze_hourly_cost(request: dict):
         results = []
         
         for rate in hourly_rates:
-            # Simple cost calculation based on processing time
-            total_proc_time_hours = state.df_ops['Total_Proc_Min'].sum() / 60
-            inhouse_cost = total_proc_time_hours * rate
-            
-            # Outsource simulation (simple threshold-based)
-            # Operations where outsource cost < 85% of in-house cost
-            outsourced_ops = 0
+            # Determine which operations to outsource
+            ops_to_schedule = []
+            outsourced_ops_list = []
             outsource_cost = 0
             
             for idx, op in state.df_ops.iterrows():
                 op_inhouse_cost = (op['Total_Proc_Min'] / 60) * rate
                 op_outsource_cost = op.get('Outsource_Cost', 0)
                 
+                # Outsource if vendor cost < 85% of in-house cost
                 if op_outsource_cost > 0 and op_outsource_cost < (op_inhouse_cost * 0.85):
-                    outsourced_ops += 1
+                    outsourced_ops_list.append(op)
                     outsource_cost += op_outsource_cost
-                    inhouse_cost -= op_inhouse_cost
+                else:
+                    ops_to_schedule.append(op)
             
-            inhouse_ops = len(state.df_ops) - outsourced_ops
+            # Create temp dataframe for in-house operations
+            temp_ops = pd.DataFrame(ops_to_schedule) if ops_to_schedule else state.df_ops.copy()
+            
+            # Run scheduling on in-house operations only
+            if len(temp_ops) > 0:
+                scheduler = CNCScheduler(
+                    temp_ops,
+                    state.df_machines.copy(),
+                    state.df_effective.copy(),
+                    state.df_penalties.copy()
+                )
+                schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
+                
+                # Calculate in-house cost from actual scheduled time
+                inhouse_cost = (schedule['Proc_Time'].sum() / 60) * rate if not schedule.empty else 0
+                
+                # Calculate metrics
+                metrics = calculate_metrics(schedule, temp_ops, heuristic)
+                
+                # Extract key scheduling metrics
+                makespan_days = metrics.get('Makespan_Days', 0)
+                tardiness_days = metrics.get('Total_Tardiness_Days', 0)
+                utilization = metrics.get('Machine_Utilization_%', 0)
+                on_time_pct = metrics.get('On_Time_%', 0)
+                late_ops = metrics.get('Late_Operations', 0)
+            else:
+                inhouse_cost = 0
+                makespan_days = 0
+                tardiness_days = 0
+                utilization = 0
+                on_time_pct = 100
+                late_ops = 0
+            
+            inhouse_ops = len(ops_to_schedule)
+            outsourced_ops = len(outsourced_ops_list)
             outsourcing_pct = (outsourced_ops / len(state.df_ops)) * 100
             total_cost = inhouse_cost + outsource_cost
             
@@ -638,13 +673,21 @@ def analyze_hourly_cost(request: dict):
                 'total_cost': round(total_cost, 2),
                 'outsourcing_pct': round(outsourcing_pct, 2),
                 'inhouse_ops': inhouse_ops,
-                'outsourced_ops': outsourced_ops
+                'outsourced_ops': outsourced_ops,
+                # Scheduling metrics showing trade-offs
+                'makespan_days': round(makespan_days, 2),
+                'tardiness_days': round(tardiness_days, 2),
+                'utilization_pct': round(utilization, 2),
+                'on_time_pct': round(on_time_pct, 2),
+                'late_operations': late_ops
             })
         
         # Find key metrics
         lowest_cost = min(results, key=lambda x: x['total_cost'])
         max_outsource = max(results, key=lambda x: x['outsourcing_pct'])
         current_rate = next((r for r in results if r['hourly_rate'] == 30), results[0])
+        best_on_time = max(results, key=lambda x: x['on_time_pct'])
+        lowest_tardiness = min(results, key=lambda x: x['tardiness_days'])
         
         return {
             "status": "success",
@@ -656,7 +699,12 @@ def analyze_hourly_cost(request: dict):
             "max_outsourcing": max_outsource['outsourcing_pct'],
             "current_cost": current_rate['total_cost'],
             "current_outsourcing": current_rate['outsourcing_pct'],
-            "total_operations": len(state.df_ops)
+            "best_on_time_rate": best_on_time['hourly_rate'],
+            "best_on_time_pct": best_on_time['on_time_pct'],
+            "lowest_tardiness_rate": lowest_tardiness['hourly_rate'],
+            "lowest_tardiness": lowest_tardiness['tardiness_days'],
+            "total_operations": len(state.df_ops),
+            "trade_off_insight": f"At ${lowest_cost['hourly_rate']}/hr (lowest cost), you'll have {lowest_cost['late_operations']} late operations with {lowest_cost['tardiness_days']:.1f} days total tardiness. At ${max_outsource['hourly_rate']}/hr, outsourcing reaches {max_outsource['outsourcing_pct']:.1f}% but may reduce tardiness to {max_outsource['tardiness_days']:.1f} days."
         }
         
     except Exception as e:
@@ -958,12 +1006,10 @@ async def load_excel_and_schedule(
             df_ops=state.df_ops,
             df_machines=state.df_machines,
             df_effective=state.df_effective,
-            df_penalties=state.df_penalties,
-            df_vendors=state.df_vendors,
-            cost_threshold=state.cost_threshold
+            df_penalties=state.df_penalties
         )
         
-        schedule = scheduler.schedule_jobs(heuristic=heuristic)
+        schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
         
         # Calculate metrics
         metrics = calculate_metrics(schedule, state.df_machines)

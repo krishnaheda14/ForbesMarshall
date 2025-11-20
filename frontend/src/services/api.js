@@ -1,5 +1,6 @@
 // src/services/api.js
 import axios from 'axios';
+import { logAPICall } from '../components/APIDebugConsole';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
 
@@ -9,6 +10,54 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// Add request interceptor for debugging
+api.interceptors.request.use(
+  (config) => {
+    config.metadata = { startTime: new Date().getTime() };
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor for debugging
+api.interceptors.response.use(
+  (response) => {
+    const duration = new Date().getTime() - response.config.metadata.startTime;
+    
+    logAPICall({
+      method: response.config.method.toUpperCase(),
+      url: response.config.url,
+      status: response.status,
+      duration: duration,
+      timestamp: new Date().getTime(),
+      request: response.config.data ? JSON.parse(response.config.data) : null,
+      response: response.data,
+    });
+    
+    return response;
+  },
+  (error) => {
+    const duration = error.config?.metadata?.startTime 
+      ? new Date().getTime() - error.config.metadata.startTime 
+      : 0;
+    
+    logAPICall({
+      method: error.config?.method?.toUpperCase() || 'UNKNOWN',
+      url: error.config?.url || 'UNKNOWN',
+      status: error.response?.status || 0,
+      duration: duration,
+      timestamp: new Date().getTime(),
+      request: error.config?.data ? JSON.parse(error.config.data) : null,
+      response: error.response?.data || null,
+      error: error.response?.data?.detail || error.message,
+    });
+    
+    return Promise.reject(error);
+  }
+);
 
 // Data Loading
 export const loadData = async (sampleSize = null) => {

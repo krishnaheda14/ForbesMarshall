@@ -18,12 +18,38 @@ import {
 } from '@mui/icons-material';
 
 function AIInsightsPanel({ insights, onClose }) {
+  // Clean insights to remove markdown artifacts
+  const cleanInsights = (text) => {
+    if (!text) return text;
+    
+    let cleaned = text;
+    
+    // Remove markdown tables (lines with | characters)
+    cleaned = cleaned.split('\n')
+      .filter(line => !line.trim().startsWith('|') && !line.includes('---|'))
+      .join('\n');
+    
+    // Remove ** bold markers
+    cleaned = cleaned.replace(/\*\*/g, '');
+    
+    // Remove extra blank lines (more than 1 consecutive)
+    cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
+    
+    // Remove leading/trailing whitespace
+    cleaned = cleaned.trim();
+    
+    return cleaned;
+  };
+
   // Parse insights to format nicely
   const formatInsights = (text) => {
     if (!text) return text;
     
+    // Clean the text first
+    const cleanedText = cleanInsights(text);
+    
     // Split by common markdown headers
-    const sections = text.split(/(?=##)/);
+    const sections = cleanedText.split(/(?=##)/);
     
     return sections.map((section, idx) => {
       // Check if it's a header section
@@ -51,7 +77,7 @@ function AIInsightsPanel({ insights, onClose }) {
             <Typography 
               variant="body1" 
               sx={{ 
-                whiteSpace: 'pre-wrap', 
+                whiteSpace: 'pre-line', 
                 lineHeight: 1.8,
                 pl: 3.5,
                 color: '#374151'
@@ -68,7 +94,7 @@ function AIInsightsPanel({ insights, onClose }) {
           key={idx}
           variant="body1" 
           sx={{ 
-            whiteSpace: 'pre-wrap', 
+            whiteSpace: 'pre-line', 
             lineHeight: 1.8,
             mb: idx < sections.length - 1 ? 2 : 0,
             color: '#374151'

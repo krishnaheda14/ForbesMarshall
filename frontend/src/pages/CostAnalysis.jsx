@@ -130,6 +130,83 @@ function CostAnalysis() {
     };
   };
 
+  const createTardinessChart = () => {
+    if (!analysisData || !analysisData.results) return null;
+
+    const results = analysisData.results;
+
+    return {
+      data: [
+        {
+          x: results.map(r => r.hourly_rate),
+          y: results.map(r => r.tardiness_days),
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: 'Total Tardiness (Days)',
+          line: { color: '#E63946', width: 4 },
+          marker: { size: 12 },
+        },
+        {
+          x: results.map(r => r.hourly_rate),
+          y: results.map(r => r.late_operations),
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: 'Late Operations',
+          line: { color: '#FF6B6B', width: 2, dash: 'dot' },
+          marker: { size: 8 },
+          yaxis: 'y2',
+        },
+      ],
+      layout: {
+        title: '⚠️ Tardiness vs Hourly Rate (The Trade-off)',
+        xaxis: { title: 'Hourly Rate ($/hr)' },
+        yaxis: { title: 'Total Tardiness (Days)' },
+        yaxis2: {
+          title: 'Number of Late Operations',
+          overlaying: 'y',
+          side: 'right',
+        },
+        height: 400,
+      },
+    };
+  };
+
+  const createUtilizationChart = () => {
+    if (!analysisData || !analysisData.results) return null;
+
+    const results = analysisData.results;
+
+    return {
+      data: [
+        {
+          x: results.map(r => r.hourly_rate),
+          y: results.map(r => r.utilization_pct),
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: 'Machine Utilization %',
+          line: { color: '#06D6A0', width: 4 },
+          marker: { size: 12, symbol: 'square' },
+        },
+        {
+          x: results.map(r => r.hourly_rate),
+          y: results.map(r => r.on_time_pct),
+          type: 'scatter',
+          mode: 'lines+markers',
+          name: 'On-Time Delivery %',
+          line: { color: '#118AB2', width: 3, dash: 'dash' },
+          marker: { size: 10 },
+          yaxis: 'y',
+        },
+      ],
+      layout: {
+        title: '📊 Capacity Utilization & On-Time Performance',
+        xaxis: { title: 'Hourly Rate ($/hr)' },
+        yaxis: { title: 'Percentage (%)' },
+        height: 400,
+      },
+    };
+  };
+
   return (
     <Container maxWidth="xl">
       <Typography variant="h1" gutterBottom>
@@ -172,15 +249,27 @@ function CostAnalysis() {
           </Grid>
 
           <Alert severity="info" sx={{ mt: 2 }}>
-            💡 <strong>What Changes with Hourly Rate:</strong> In-house labor cost increases,
-            outsourcing becomes more attractive. <strong>What Doesn't Change:</strong> Tardiness,
-            utilization, makespan (these depend on scheduling, not cost).
+            💡 <strong>The Trade-off:</strong> Lower hourly rates mean less outsourcing (cheaper in-house). 
+            BUT keeping everything in-house at low rates increases machine utilization → capacity constraints → tardiness → late deliveries.
+            Higher rates increase outsourcing, reducing load and improving on-time performance.
           </Alert>
         </CardContent>
       </Card>
 
       {analysisData && (
         <>
+          {/* Trade-off Insight */}
+          <Card sx={{ mb: 3, bgcolor: '#fff3e0' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                🎯 Key Insight: Cost vs Delivery Trade-off
+              </Typography>
+              <Typography variant="body1">
+                {analysisData.trade_off_insight}
+              </Typography>
+            </CardContent>
+          </Card>
+
           {/* Key Metrics */}
           <Grid container spacing={2} sx={{ mb: 3 }}>
             <Grid item xs={12} md={3}>
@@ -202,19 +291,34 @@ function CostAnalysis() {
               <Card sx={{ bgcolor: '#fff3e0' }}>
                 <CardContent>
                   <Typography variant="caption" color="text.secondary">
-                    Current Rate ($30/hr)
+                    Best On-Time Delivery
                   </Typography>
                   <Typography variant="h5">
-                    {analysisData.current_outsourcing?.toFixed(1)}%
+                    ${analysisData.best_on_time_rate}/hr
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    ${analysisData.current_cost?.toFixed(0)}
+                    {analysisData.best_on_time_pct?.toFixed(1)}% on-time
                   </Typography>
                 </CardContent>
               </Card>
             </Grid>
             <Grid item xs={12} md={3}>
               <Card sx={{ bgcolor: '#f3e5f5' }}>
+                <CardContent>
+                  <Typography variant="caption" color="text.secondary">
+                    Lowest Tardiness
+                  </Typography>
+                  <Typography variant="h5">
+                    ${analysisData.lowest_tardiness_rate}/hr
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {analysisData.lowest_tardiness?.toFixed(1)} days
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <Card sx={{ bgcolor: '#e8f5e9' }}>
                 <CardContent>
                   <Typography variant="caption" color="text.secondary">
                     Max Outsourcing
@@ -228,22 +332,9 @@ function CostAnalysis() {
                 </CardContent>
               </Card>
             </Grid>
-            <Grid item xs={12} md={3}>
-              <Card sx={{ bgcolor: '#e8f5e9' }}>
-                <CardContent>
-                  <Typography variant="caption" color="text.secondary">
-                    Algorithm Used
-                  </Typography>
-                  <Typography variant="h5">{heuristic}</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {analysisData.total_operations} operations
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
           </Grid>
 
-          {/* Charts */}
+          {/* Charts - 4 Charts Now */}
           <Grid container spacing={2} sx={{ mb: 3 }}>
             <Grid item xs={12} md={6}>
               <Card>
@@ -259,39 +350,68 @@ function CostAnalysis() {
                 </CardContent>
               </Card>
             </Grid>
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Plot {...createTardinessChart()} style={{ width: '100%' }} />
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Plot {...createUtilizationChart()} style={{ width: '100%' }} />
+                </CardContent>
+              </Card>
+            </Grid>
           </Grid>
 
-          {/* Data Table */}
+          {/* Data Table - Enhanced with Scheduling Metrics */}
           <Card>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                📊 Detailed Results
+                📊 Detailed Results with Scheduling Metrics
               </Typography>
               <TableContainer component={Paper}>
                 <Table size="small">
                   <TableHead>
                     <TableRow sx={{ backgroundColor: '#f8f9fa' }}>
-                      <TableCell><strong>Hourly Rate</strong></TableCell>
-                      <TableCell align="right"><strong>Outsourcing %</strong></TableCell>
-                      <TableCell align="right"><strong>In-House Ops</strong></TableCell>
-                      <TableCell align="right"><strong>Outsourced Ops</strong></TableCell>
-                      <TableCell align="right"><strong>In-House Cost</strong></TableCell>
-                      <TableCell align="right"><strong>Outsource Cost</strong></TableCell>
+                      <TableCell><strong>Rate</strong></TableCell>
+                      <TableCell align="right"><strong>Outsource %</strong></TableCell>
                       <TableCell align="right"><strong>Total Cost</strong></TableCell>
+                      <TableCell align="right"><strong>Tardiness (Days)</strong></TableCell>
+                      <TableCell align="right"><strong>Late Ops</strong></TableCell>
+                      <TableCell align="right"><strong>Utilization %</strong></TableCell>
+                      <TableCell align="right"><strong>On-Time %</strong></TableCell>
+                      <TableCell align="right"><strong>Makespan (Days)</strong></TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {analysisData.results.map((row, index) => (
-                      <TableRow key={index}>
-                        <TableCell>${row.hourly_rate}/hr</TableCell>
+                      <TableRow 
+                        key={index}
+                        sx={{
+                          backgroundColor: 
+                            row.hourly_rate === analysisData.lowest_cost_rate ? '#e3f2fd' :
+                            row.hourly_rate === analysisData.best_on_time_rate ? '#e8f5e9' :
+                            row.hourly_rate === analysisData.lowest_tardiness_rate ? '#f3e5f5' :
+                            'white'
+                        }}
+                      >
+                        <TableCell><strong>${row.hourly_rate}/hr</strong></TableCell>
                         <TableCell align="right">{row.outsourcing_pct.toFixed(1)}%</TableCell>
-                        <TableCell align="right">{row.inhouse_ops}</TableCell>
-                        <TableCell align="right">{row.outsourced_ops}</TableCell>
-                        <TableCell align="right">${row.inhouse_cost.toFixed(0)}</TableCell>
-                        <TableCell align="right">${row.outsource_cost.toFixed(0)}</TableCell>
-                        <TableCell align="right">
-                          <strong>${row.total_cost.toFixed(0)}</strong>
+                        <TableCell align="right">${row.total_cost.toFixed(0)}</TableCell>
+                        <TableCell align="right" sx={{ color: row.tardiness_days > 0 ? '#e63946' : 'green' }}>
+                          {row.tardiness_days.toFixed(1)}
                         </TableCell>
+                        <TableCell align="right" sx={{ color: row.late_operations > 0 ? '#e63946' : 'green' }}>
+                          {row.late_operations}
+                        </TableCell>
+                        <TableCell align="right">{row.utilization_pct.toFixed(1)}%</TableCell>
+                        <TableCell align="right" sx={{ color: row.on_time_pct >= 90 ? 'green' : '#f18f01' }}>
+                          {row.on_time_pct.toFixed(1)}%
+                        </TableCell>
+                        <TableCell align="right">{row.makespan_days.toFixed(1)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

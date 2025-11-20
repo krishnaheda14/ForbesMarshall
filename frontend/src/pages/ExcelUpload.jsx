@@ -211,6 +211,20 @@ function ExcelUpload() {
         { variant: 'success' }
       );
       
+      // Auto-fetch AI insights after scheduling
+      setTimeout(async () => {
+        try {
+          const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
+            prompt: `Analyze this ${heuristic} scheduling result and provide insights on performance, bottlenecks, and recommendations:\nMetrics: ${JSON.stringify(response.data.metrics)}`,
+            context_data: response.data.metrics
+          });
+          
+          setAiInsights(cleanAIInsights(aiResponse.data.response));
+        } catch (error) {
+          console.error('Failed to fetch AI insights:', error);
+        }
+      }, 500);
+      
     } catch (error) {
       enqueueSnackbar(`Scheduling failed: ${error.response?.data?.detail || error.message}`, { 
         variant: 'error' 
@@ -254,7 +268,7 @@ function ExcelUpload() {
         context_data: metricsData
       });
       
-      setAiInsights(aiResponse.data.response);
+      setAiInsights(cleanAIInsights(aiResponse.data.response));
       setAiInsightsOpen(true);
       
     } catch (error) {
@@ -270,6 +284,28 @@ function ExcelUpload() {
     if (confidence >= 0.85) return 'success';
     if (confidence >= 0.7) return 'warning';
     return 'error';
+  };
+
+  const cleanAIInsights = (text) => {
+    if (!text) return '';
+    
+    let cleaned = text;
+    
+    // Remove markdown tables (lines with | characters)
+    cleaned = cleaned.split('\n')
+      .filter(line => !line.trim().startsWith('|') && !line.includes('---|'))
+      .join('\n');
+    
+    // Remove ** bold markers
+    cleaned = cleaned.replace(/\*\*/g, '');
+    
+    // Remove extra blank lines (more than 1 consecutive)
+    cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
+    
+    // Remove leading/trailing whitespace
+    cleaned = cleaned.trim();
+    
+    return cleaned;
   };
 
   return (
@@ -575,8 +611,123 @@ function ExcelUpload() {
             Successfully scheduled {scheduleResult.job_count} jobs using {selectedHeuristic} algorithm!
           </Alert>
 
-          {/* KPI Cards */}
-          <Grid container spacing={2} sx={{ mb: 3 }}>
+          {/* Detailed KPI Table for Selected Heuristic */}
+          <Card sx={{ mb: 3, bgcolor: '#f8f9fa' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                📊 Performance Metrics - {selectedHeuristic}
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Makespan
+                    </Typography>
+                    <Typography variant="h6" color="primary">
+                      {scheduleResult.metrics?.Makespan_Days?.toFixed(2) || scheduleResult.metrics?.makespan?.toFixed(0) || 'N/A'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {scheduleResult.metrics?.Makespan_Days ? 'days' : 'min'}
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Tardiness
+                    </Typography>
+                    <Typography variant="h6" color="error">
+                      {scheduleResult.metrics?.Total_Tardiness_Days?.toFixed(2) || scheduleResult.metrics?.total_tardiness?.toFixed(0) || 'N/A'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {scheduleResult.metrics?.Total_Tardiness_Days ? 'days' : 'min'}
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Utilization
+                    </Typography>
+                    <Typography variant="h6" color="success.main">
+                      {scheduleResult.metrics?.['Machine_Utilization_%']?.toFixed(1) || scheduleResult.metrics?.utilization?.toFixed(1) || 'N/A'}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      machines
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      On-Time %
+                    </Typography>
+                    <Typography variant="h6" color="success.main">
+                      {scheduleResult.metrics?.['On_Time_%']?.toFixed(1) || scheduleResult.metrics?.on_time_pct?.toFixed(1) || 'N/A'}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      delivery
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Late Operations
+                    </Typography>
+                    <Typography variant="h6" color="warning.main">
+                      {scheduleResult.metrics?.Late_Operations || scheduleResult.metrics?.late_ops || 'N/A'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      of {scheduleResult.metrics?.Total_Operations || scheduleResult.job_count}
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Total Cost
+                    </Typography>
+                    <Typography variant="h6" color="primary">
+                      ${scheduleResult.metrics?.['Total_Cost_$']?.toFixed(0) || scheduleResult.metrics?.total_cost?.toFixed(0) || 'N/A'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      estimated
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Avg Tardiness
+                    </Typography>
+                    <Typography variant="h6" color="warning.main">
+                      {scheduleResult.metrics?.Avg_Tardiness_Min?.toFixed(1) || scheduleResult.metrics?.avg_tardiness?.toFixed(1) || 'N/A'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      min/op
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'white', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Algorithm
+                    </Typography>
+                    <Typography variant="h6" color="secondary">
+                      {selectedHeuristic}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      heuristic
+                    </Typography>
+                  </Box>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+
+          {/* Old KPI Cards - Remove or Keep for backward compatibility */}
+          <Grid container spacing={2} sx={{ mb: 3, display: 'none' }}>
             <Grid item xs={12} md={3}>
               <Card sx={{ bgcolor: '#e3f2fd' }}>
                 <CardContent>
@@ -670,8 +821,33 @@ function ExcelUpload() {
             </Card>
           )}
 
+          {/* AI Insights Panel */}
+          {aiInsights && (
+            <Card sx={{ mb: 3, background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <AIIcon sx={{ color: 'white', fontSize: 28 }} />
+                  <Typography variant="h6" sx={{ color: 'white', fontWeight: 'bold' }}>
+                    ✨ AI Insights & Recommendations
+                  </Typography>
+                </Box>
+                <Box sx={{ 
+                  backgroundColor: 'rgba(255,255,255,0.95)', 
+                  p: 2, 
+                  borderRadius: 2,
+                  maxHeight: '400px',
+                  overflowY: 'auto'
+                }}>
+                  <Typography variant="body1" sx={{ whiteSpace: 'pre-line', lineHeight: 1.6 }}>
+                    {aiInsights}
+                  </Typography>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Action Buttons */}
-          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 3 }}>
             <Button
               variant="contained"
               startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}

@@ -6,6 +6,7 @@ import { CssBaseline, Box } from '@mui/material';
 import { SnackbarProvider } from 'notistack';
 
 import Sidebar from './components/Sidebar';
+import APIDebugConsole from './components/APIDebugConsole';
 import Dashboard from './pages/Dashboard';
 import Comparison from './pages/Comparison';
 import GanttView from './pages/GanttView';
@@ -120,6 +121,7 @@ function App() {
                 </Routes>
               </Box>
             </Box>
+            <APIDebugConsole />
           </Router>
         </SnackbarProvider>
       </ThemeProvider>
