@@ -19,7 +19,7 @@ import {
   InputAdornment,
   Button,
 } from '@mui/material';
-import { Search as SearchIcon, Download as DownloadIcon } from '@mui/icons-material';
+import { Search as SearchIcon, Download as DownloadIcon, Refresh as RefreshIcon } from '@mui/icons-material';
 import useSchedulerStore from '../store/useSchedulerStore';
 import { getCurrentSchedule } from '../services/api';
 
@@ -32,6 +32,11 @@ function OperationStatus() {
       fetchSchedule();
     }
   }, [currentHeuristic]);
+  
+  // Auto-refresh when currentSchedule changes
+  useEffect(() => {
+    // This will cause re-render when schedule is updated elsewhere
+  }, [currentSchedule]);
 
   const fetchSchedule = async () => {
     try {
@@ -92,13 +97,22 @@ function OperationStatus() {
             Detailed view of all scheduled operations for {currentHeuristic}
           </Typography>
         </Box>
-        <Button
-          variant="contained"
-          startIcon={<DownloadIcon />}
-          onClick={handleExport}
-        >
-          Export CSV
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={fetchSchedule}
+          >
+            Refresh
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<DownloadIcon />}
+            onClick={handleExport}
+          >
+            Export CSV
+          </Button>
+        </Box>
       </Box>
 
       <Card>
@@ -139,18 +153,18 @@ function OperationStatus() {
               <TableBody>
                 {filteredOperations.map((op, index) => {
                   const getPriorityColor = (priority) => {
-                    const p = typeof priority === 'string' ? priority.toLowerCase() : String(priority);
-                    if (p === 'high' || p === '1') return 'error';
-                    if (p === 'medium' || p === '2' || p === '3') return 'warning';
+                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 3;
+                    if (p === 1) return 'error';      // High
+                    if (p === 3) return 'warning';    // Medium
+                    if (p === 5) return 'default';    // Low
                     return 'default';
                   };
                   const getPriorityLabel = (priority) => {
-                    const p = typeof priority === 'string' ? priority : String(priority);
-                    if (p === '1') return 'High';
-                    if (p === '2') return 'Medium';
-                    if (p === '3') return 'Low';
-                    if (p === '4') return 'Very Low';
-                    return p;
+                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 3;
+                    if (p === 1) return 'High';
+                    if (p === 3) return 'Medium';
+                    if (p === 5) return 'Low';
+                    return `Priority ${p}`;
                   };
                   const assignmentType = op.Assignment_Type || (op.Machine_ID ? 'IN_HOUSE' : 'OUTSOURCE');
                   const isOutsourced = assignmentType === 'OUTSOURCE';

@@ -335,6 +335,13 @@ async def load_data(request: LoadDataRequest = Body(default=LoadDataRequest(samp
         sample_size = request.sample_size
         df_ops, df_machines, df_effective, df_penalties, df_vendors = load_all_data(sample_size)
         
+        # Debug: report loaded dataframe shapes
+        print(f"[load_all_data] df_ops shape: {getattr(df_ops, 'shape', None)}")
+        print(f"[load_all_data] df_machines shape: {getattr(df_machines, 'shape', None)}")
+        print(f"[load_all_data] df_effective shape: {getattr(df_effective, 'shape', None)}")
+        print(f"[load_all_data] df_penalties shape: {getattr(df_penalties, 'shape', None)}")
+        print(f"[load_all_data] df_vendors shape: {getattr(df_vendors, 'shape', None)}")
+
         state.df_ops = df_ops
         state.df_machines = df_machines
         state.df_effective = df_effective
@@ -623,6 +630,11 @@ def simulate_breakdown(request: MachineBreakdownRequest):
             existing_maint.append(new_breakdown)
             state.df_machines.at[idx, 'Maintenance_Window'] = existing_maint
         
+        # Clear all existing schedules since breakdown invalidates them
+        state.schedules = {}
+        state.metrics = {}
+        state.current_heuristic = None
+        
         state.activity_log.append({
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'action': 'Machine Breakdown Simulated',
@@ -631,7 +643,7 @@ def simulate_breakdown(request: MachineBreakdownRequest):
         
         return {
             "status": "success",
-            "message": "Breakdown simulated. Recompute heuristics to see impact.",
+            "message": f"Breakdown simulated on {request.machine_id}. All schedules cleared - please recompute heuristics to see rescheduled operations.",
             "breakdown": new_breakdown
         }
     except Exception as e:
@@ -650,6 +662,11 @@ def update_priority(request: PriorityUpdateRequest):
         
         state.df_ops.loc[job_mask, 'Priority'] = request.priority
         
+        # Clear cached schedules to force recomputation
+        state.schedules = {}
+        state.metrics = {}
+        state.current_heuristic = None
+        
         state.activity_log.append({
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'action': 'Priority Updated',
@@ -658,7 +675,7 @@ def update_priority(request: PriorityUpdateRequest):
         
         return {
             "status": "success",
-            "message": f"Priority updated for {request.job_id}. Recompute heuristics to see impact."
+            "message": f"Priority updated for {request.job_id}. Schedules cleared - recompute heuristics to see impact."
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -998,6 +1015,11 @@ def add_job(request: dict):
         new_ops = []
         for i, op in enumerate(operations):
             op_id = f"{job_id}_OP{i+1}"
+            # Convert priority string to numeric
+            priority_str = op.get('priority', 'Medium')
+            priority_map = {'High': 1, 'Medium': 3, 'Low': 5, 1: 1, 3: 3, 5: 5}
+            priority_num = priority_map.get(priority_str, 3)
+            
             new_op = {
                 'Job_ID': job_id,
                 'Operation_ID': op_id,
@@ -1009,7 +1031,7 @@ def add_job(request: dict):
                 'Quantity': op.get('quantity', 1),
                 'Release_Day': op.get('release_day', 0),
                 'Due_Day': op.get('due_day', 10),
-                'Priority': op.get('priority', 'Medium'),
+                'Priority': priority_num,
                 'Vendor_Ref': op.get('vendor_ref', 'V1'),
                 'Outsource_Cost': op.get('outsource_cost', 0),
                 'Outsource_Time_Min': op.get('outsource_time', 0),

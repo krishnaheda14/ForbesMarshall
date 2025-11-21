@@ -44,6 +44,7 @@ function Dashboard() {
   const { enqueueSnackbar } = useSnackbar();
   const {
     dataLoaded,
+    dataStats,
     setDataLoaded,
     currentHeuristic,
     currentSchedule,
@@ -309,17 +310,17 @@ function Dashboard() {
                     </Typography>
                     <Box display="flex" gap={1} mt={1}>
                       <Chip 
-                        label={`${useSchedulerStore.getState().dataStats?.operations || 0} Operations`} 
+                        label={`${dataStats?.operations || 0} Operations`} 
                         size="small" 
                         color="success"
                       />
                       <Chip 
-                        label={`${useSchedulerStore.getState().dataStats?.machines || 0} Machines`} 
+                        label={`${dataStats?.machines || 0} Machines`} 
                         size="small" 
                         color="success"
                       />
                       <Chip 
-                        label={`${useSchedulerStore.getState().dataStats?.jobs || 0} Jobs`} 
+                        label={`${dataStats?.jobs || 0} Jobs`} 
                         size="small" 
                         color="success"
                       />

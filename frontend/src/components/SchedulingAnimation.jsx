@@ -65,32 +65,88 @@ function SchedulingAnimation({ heuristic, schedule, metrics }) {
     return colors[Math.abs(hash) % colors.length];
   };
 
-  // Create animated Gantt chart
+  // Helper: Extract breakdowns from schedule
+  const getBreakdownWindows = () => {
+    // Find all breakdowns in schedule (if present)
+    // If schedule items have Breakdown_Start/Breakdown_End, use them
+    // Otherwise, fallback to a prop or global state if available
+    const breakdowns = [];
+    schedule.forEach(item => {
+      if (item.Breakdown_Start !== undefined && item.Breakdown_End !== undefined) {
+        breakdowns.push({
+          machine: item.Machine_ID,
+          start: item.Breakdown_Start,
+          end: item.Breakdown_End
+        });
+      }
+    });
+    // Remove duplicates
+    return breakdowns.filter((b, i, arr) =>
+      arr.findIndex(x => x.machine === b.machine && x.start === b.start && x.end === b.end) === i
+    );
+  };
+
+  // Helper: Check if job overlaps any breakdown
+  const jobOverlapsBreakdown = (job, breakdowns) => {
+    return breakdowns.some(b =>
+      b.machine === job.Machine_ID && job.Start_Time < b.end && job.End_Time > b.start
+    );
+  };
+
+  // Create animated Gantt chart with breakdowns
   const createGanttData = () => {
-    return visibleSchedule.map((item) => ({
-      x: [item.Start_Time, item.End_Time],
-      y: [item.Machine_ID, item.Machine_ID],
+    const breakdowns = getBreakdownWindows();
+    const jobTraces = visibleSchedule.map((item) => {
+      const overlaps = jobOverlapsBreakdown(item, breakdowns);
+      return {
+        x: [item.Start_Time, item.End_Time],
+        y: [item.Machine_ID, item.Machine_ID],
+        type: 'scatter',
+        mode: 'lines',
+        line: {
+          width: 25,
+          color: overlaps ? '#d32f2f' : getJobColor(item.Job_ID), // Red if overlaps breakdown
+        },
+        name: `${item.Job_ID}`,
+        text: `${item.Job_ID}`,
+        hovertemplate:
+          `<b>Machine:</b> ${item.Machine_ID}<br>` +
+          `<b>Job:</b> ${item.Job_ID}<br>` +
+          `<b>Operation:</b> ${item.Operation_ID}<br>` +
+          `<b>Start:</b> ${item.Start_Time.toFixed(0)} min<br>` +
+          `<b>End:</b> ${item.End_Time.toFixed(0)} min<br>` +
+          `<b>Duration:</b> ${(item.End_Time - item.Start_Time).toFixed(0)} min<br>` +
+          (overlaps ? `<b style='color:red'>Overlaps Breakdown!</b><br>` : '') +
+          `<extra></extra>`,
+        hoverlabel: {
+          bgcolor: 'white',
+          font: { size: 12, color: 'black' },
+        },
+      };
+    });
+
+    // Add breakdown traces as gray bars
+    const breakdownTraces = breakdowns.map(b => ({
+      x: [b.start, b.end],
+      y: [b.machine, b.machine],
       type: 'scatter',
       mode: 'lines',
       line: {
         width: 25,
-        color: getJobColor(item.Job_ID),
+        color: '#888',
+        dash: 'dash',
       },
-      name: `${item.Job_ID}`,
-      text: `${item.Job_ID}`,
+      name: `Breakdown (${b.machine})`,
+      text: `Breakdown`,
       hovertemplate:
-        `<b>Machine:</b> ${item.Machine_ID}<br>` +
-        `<b>Job:</b> ${item.Job_ID}<br>` +
-        `<b>Operation:</b> ${item.Operation_ID}<br>` +
-        `<b>Start:</b> ${item.Start_Time.toFixed(0)} min<br>` +
-        `<b>End:</b> ${item.End_Time.toFixed(0)} min<br>` +
-        `<b>Duration:</b> ${(item.End_Time - item.Start_Time).toFixed(0)} min<br>` +
+        `<b>Machine:</b> ${b.machine}<br>` +
+        `<b>Breakdown:</b> ${b.start} - ${b.end} min<br>` +
         `<extra></extra>`,
-      hoverlabel: {
-        bgcolor: 'white',
-        font: { size: 12, color: 'black' },
-      },
+      opacity: 0.5,
+      showlegend: true,
     }));
+
+    return [...jobTraces, ...breakdownTraces];
   };
 
   const progress = totalSteps > 0 ? ((currentStep + 1) / totalSteps) * 100 : 0;

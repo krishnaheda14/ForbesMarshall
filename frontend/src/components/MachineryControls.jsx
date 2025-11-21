@@ -17,7 +17,7 @@ import {
   AttachMoney as OutsourceIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { simulateBreakdown, updateJobPriority, updateOutsourcingPolicy, getCurrentSchedule } from '../services/api';
+import { simulateBreakdown, updateJobPriority, updateOutsourcingPolicy, getCurrentSchedule, computeAllHeuristics, applyHeuristic } from '../services/api';
 import useSchedulerStore from '../store/useSchedulerStore';
 
 function MachineryControls() {
@@ -39,14 +39,17 @@ function MachineryControls() {
   const handleBreakdown = async () => {
     try {
       await simulateBreakdown(machineId, breakdownStart, breakdownDuration);
-      enqueueSnackbar('Breakdown simulated! View in Gantt Chart.', {
-        variant: 'success',
+      
+      // Clear all schedules and metrics since breakdown invalidates them
+      const { setCurrentSchedule, reset } = useSchedulerStore.getState();
+      setCurrentSchedule(null);
+      
+      enqueueSnackbar('Breakdown simulated! All schedules cleared. Please recompute heuristics to see rescheduled operations.', {
+        variant: 'warning',
+        autoHideDuration: 5000,
       });
       
-      console.log('Breakdown simulated, dispatching event...');
-      // Trigger Gantt chart refresh without recomputing
-      window.dispatchEvent(new CustomEvent('breakdown-updated'));
-      console.log('Breakdown-updated event dispatched');
+      console.log('Breakdown simulated, schedules cleared');
     } catch (error) {
       console.error('Breakdown simulation error:', error);
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
@@ -62,9 +65,27 @@ function MachineryControls() {
     }
     
     try {
+      // Remember the current heuristic before update
+      const previousHeuristic = currentHeuristic || 'PRIORITY';
+      
       await updateJobPriority(jobId, priority);
+      
       enqueueSnackbar(
-        `✅ Priority updated for ${jobId} to ${priority}. Check Operation Status tab to verify!`,
+        `✅ Priority updated for ${jobId} to ${priority}. Recomputing all heuristics...`,
+        { variant: 'info', autoHideDuration: 3000 }
+      );
+      
+      // Automatically recompute all heuristics to show immediate impact
+      const result = await computeAllHeuristics();
+      const { setMetrics, setCurrentSchedule } = useSchedulerStore.getState();
+      setMetrics(result.results);
+      
+      // Automatically apply the previously selected heuristic (or PRIORITY if none was selected)
+      const applyResult = await applyHeuristic(previousHeuristic);
+      setCurrentSchedule(applyResult.schedule);
+      
+      enqueueSnackbar(
+        `All heuristics recomputed and ${previousHeuristic} applied! Check Comparison and Operations tabs.`,
         { variant: 'success', autoHideDuration: 5000 }
       );
     } catch (error) {

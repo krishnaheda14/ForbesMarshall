@@ -130,26 +130,36 @@ class CNCScheduler:
         if len(eligible) == 0:
             return None, float('inf')
 
-        best_machine = None
-        best_completion = float('inf')
-        for _, machine_option in eligible.iterrows():
-            machine_id = machine_option['Machine_ID']
-            eff_time = machine_option['Effective_Proc_Time']
+            best_machine = None
+            best_completion = float('inf')
+            for _, machine_option in eligible.iterrows():
+                machine_id = machine_option['Machine_ID']
+                eff_time = machine_option['Effective_Proc_Time']
 
-            prev_material = self.machine_last_material.get(machine_id)
-            setup_penalty = get_setup_penalty(prev_material, operation.get('Mat_Type', None), self.df_penalties)
+                prev_material = self.machine_last_material.get(machine_id)
+                setup_penalty = get_setup_penalty(prev_material, operation.get('Mat_Type', None), self.df_penalties)
 
-            actual_setup_time = operation.get('Setup_Time', 0) + setup_penalty
-            transfer_time = operation.get('Transfer_Min', 0)
-            total_duration = actual_setup_time + eff_time + transfer_time
+                actual_setup_time = operation.get('Setup_Time', 0) + setup_penalty
+                transfer_time = operation.get('Transfer_Min', 0)
+                total_duration = actual_setup_time + eff_time + transfer_time
 
-            start_time = self.get_earliest_available_time(machine_id, earliest_start_time, total_duration)
-            completion_time = start_time + total_duration
-
-            if completion_time < best_completion:
-                best_completion = completion_time
-                best_machine = machine_id
-        return best_machine, best_completion
+                start_time = self.get_earliest_available_time(machine_id, earliest_start_time, total_duration)
+                # Check if this slot overlaps any breakdown
+                machine_row = self.df_machines[self.df_machines['Machine_ID'] == machine_id]
+                maintenance = machine_row.iloc[0].get('Maintenance_Window', None) if not machine_row.empty else None
+                overlaps_breakdown = False
+                if maintenance:
+                    windows = [maintenance] if isinstance(maintenance, dict) else [w for w in maintenance if isinstance(w, dict) and w] if isinstance(maintenance, list) else []
+                    for window in windows:
+                        w_start = window.get('start', 0)
+                        w_end = window.get('end', 0)
+                        if start_time < w_end and (start_time + total_duration) > w_start:
+                            overlaps_breakdown = True
+                            break
+                if not overlaps_breakdown and (start_time + total_duration) < best_completion:
+                    best_completion = start_time + total_duration
+                    best_machine = machine_id
+            return best_machine, best_completion
 
     def schedule_operation(self, operation, machine_id, earliest_start_time):
         """
@@ -234,21 +244,19 @@ class CNCScheduler:
         def safe_priority(op):
             return int(op.get('Priority', 3))
         
-        def calculate_slack(op):
-            """Calculate slack time"""
-            if self.machine_availability:
-                current_time = min(self.machine_availability.values())
-            else:
-                current_time = 0
-            slack = op['Due_Time_Min'] - current_time - op['Total_Proc_Min']
+        def calculate_slack(op_tuple):
+            """Calculate slack time - uses actual earliest start time for this operation"""
+            op, earliest_start = op_tuple
+            slack = op['Due_Time_Min'] - earliest_start - op['Total_Proc_Min']
             return max(slack, 0.1)
         
-        def calculate_weighted_score(op):
+        def calculate_weighted_score(op_tuple):
             """Balanced scoring combining multiple factors"""
+            op, earliest_start = op_tuple
             priority_score = safe_priority(op) / 4.0
             time_score = op['Total_Proc_Min'] / 500.0
             
-            slack = calculate_slack(op)
+            slack = op['Due_Time_Min'] - earliest_start - op['Total_Proc_Min']
             slack_urgency = 1.0 / max(slack, 1.0)
             slack_score = min(slack_urgency / 10.0, 1.0)
             
@@ -286,13 +294,13 @@ class CNCScheduler:
             # Multi-objective - balances priority, slack, and processing time with weights
             op, earliest_start = min(
                 available_ops,
-                key=lambda x: calculate_weighted_score(x[0])
+                key=calculate_weighted_score
             )
         elif heuristic == 'SLACK' or heuristic == 'DEADLINE_FIRST':
             # Minimum slack time - schedule jobs with least time buffer first
             op, earliest_start = min(
                 available_ops,
-                key=lambda x: (calculate_slack(x[0]), x[0]['Total_Proc_Min'])
+                key=lambda x: (calculate_slack(x), x[0]['Total_Proc_Min'])
             )
         else:
             # Default fallback to SPT
@@ -346,7 +354,25 @@ class CNCScheduler:
 
             best_machine, best_completion = self.find_best_machine(next_op, earliest_start_time)
             if best_machine is None:
-                self.op_completion_times[next_op['Operation_ID']] = float('inf')
+                # No available machine without breakdown conflict, outsource if allowed
+                next_op['Assignment_Type'] = 'OUTSOURCE'
+                outsource_time = next_op.get('Outsource_Time_Min', next_op.get('Total_Proc_Min', 0))
+                release_time = next_op.get('Release_Time_Min', 0)
+                self.schedule.append({
+                    'Operation_ID': next_op['Operation_ID'],
+                    'Job_ID': next_op['Job_ID'],
+                    'Machine_ID': 'OUTSOURCE',
+                    'Start_Time': release_time,
+                    'End_Time': release_time + outsource_time,
+                    'Setup_Time': 0,
+                    'Proc_Time': 0,
+                    'Transfer_Time': 0,
+                    'Due_Time': next_op.get('Due_Time_Min', 0),
+                    'Tardiness': max(0, (release_time + outsource_time) - next_op.get('Due_Time_Min', 0)),
+                    'Priority': next_op.get('Priority', 3),
+                    'Assignment_Type': 'OUTSOURCE'
+                })
+                self.op_completion_times[next_op['Operation_ID']] = release_time + outsource_time
                 scheduled_ops_set.add(next_op['Operation_ID'])
                 continue
 

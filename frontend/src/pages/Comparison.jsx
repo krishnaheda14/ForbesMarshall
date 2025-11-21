@@ -33,7 +33,7 @@ import AIInsightsPanel from '../components/AIInsightsPanel';
 
 function Comparison() {
   const { enqueueSnackbar } = useSnackbar();
-  const { metrics, setMetrics } = useSchedulerStore();
+  const { metrics, setMetrics, dataLoaded } = useSchedulerStore();
   const [loading, setLoading] = useState(false);
   const [aiInsights, setAiInsights] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
@@ -93,6 +93,10 @@ function Comparison() {
   };
 
   const handleComputeCPSAT = async () => {
+    if (!dataLoaded) {
+      enqueueSnackbar('Please load data first from the Dashboard before computing CP-SAT', { variant: 'warning' });
+      return;
+    }
     try {
       setLoadingCPSAT(true);
       const result = await computeCPSATOptimal();
@@ -134,9 +138,21 @@ function Comparison() {
         <Typography variant="h1" gutterBottom>
           Heuristic Comparison
         </Typography>
-        <Alert severity="info">
+        <Alert severity="info" sx={{ mb: 2 }}>
           No metrics available. Please load data and compute heuristics from the sidebar.
         </Alert>
+        {!dataLoaded && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            ⚠️ Data not loaded. Go to Dashboard and click "Load Data" first.
+          </Alert>
+        )}
+        <Button
+          variant="contained"
+          color="primary"
+          onClick={() => window.location.href = '/'}
+        >
+          Go to Dashboard
+        </Button>
       </Container>
     );
   }
