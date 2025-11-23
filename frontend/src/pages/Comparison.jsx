@@ -1,4 +1,3 @@
-// src/pages/Comparison.jsx
 import React, { useEffect, useState } from 'react';
 import {
   Container,
@@ -63,7 +62,6 @@ function Comparison() {
       }
     } catch (error) {
       console.error('Failed to fetch metrics:', error);
-      // Expected if no metrics computed yet
     } finally {
       setLoading(false);
     }
@@ -126,11 +124,22 @@ function Comparison() {
     }
   };
 
-  // Table metrics array
-  const metricsArray = [
+  // --- STRICT FILTER IMPLEMENTATION ---
+  // This list defines EXACTLY what is allowed to be shown.
+  // Anything else (like "SLACK" or "WEIGHTED") will be blocked.
+  const ALLOWED_HEURISTICS = ['SPT', 'EDD', 'CR', 'PRIORITY', 'CP-SAT Optimal'];
+
+  // Prepare metrics array with filtering
+  const rawMetrics = [
     ...Object.values(metrics).map((m) => m.metrics),
     ...(cpsatMetrics ? [{ ...cpsatMetrics, Heuristic: 'CP-SAT Optimal' }] : []),
   ];
+
+  // Apply the filter
+  const metricsArray = rawMetrics.filter(item => 
+    ALLOWED_HEURISTICS.includes(item.Heuristic)
+  );
+  // ------------------------------------
 
   if (metricsArray.length === 0) {
     return (

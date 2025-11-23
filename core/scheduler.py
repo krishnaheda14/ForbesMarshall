@@ -244,27 +244,6 @@ class CNCScheduler:
         def safe_priority(op):
             return int(op.get('Priority', 3))
         
-        def calculate_slack(op_tuple):
-            """Calculate slack time - uses actual earliest start time for this operation"""
-            op, earliest_start = op_tuple
-            slack = op['Due_Time_Min'] - earliest_start - op['Total_Proc_Min']
-            return max(slack, 0.1)
-        
-        def calculate_weighted_score(op_tuple):
-            """Balanced scoring combining multiple factors"""
-            op, earliest_start = op_tuple
-            priority_score = safe_priority(op) / 4.0
-            time_score = op['Total_Proc_Min'] / 500.0
-            
-            slack = op['Due_Time_Min'] - earliest_start - op['Total_Proc_Min']
-            slack_urgency = 1.0 / max(slack, 1.0)
-            slack_score = min(slack_urgency / 10.0, 1.0)
-            
-            score = (0.4 * priority_score +
-                    0.3 * slack_score +
-                    0.3 * time_score)
-            return score
-
         # Selection logic based on heuristic
         if heuristic == 'SPT':
             # Shortest Processing Time - schedule shortest jobs first
@@ -290,18 +269,6 @@ class CNCScheduler:
                 available_ops,
                 key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'], x[0]['Total_Proc_Min'])
             )
-        elif heuristic == 'WEIGHTED' or heuristic == 'BALANCED':
-            # Multi-objective - balances priority, slack, and processing time with weights
-            op, earliest_start = min(
-                available_ops,
-                key=calculate_weighted_score
-            )
-        elif heuristic == 'SLACK' or heuristic == 'DEADLINE_FIRST':
-            # Minimum slack time - schedule jobs with least time buffer first
-            op, earliest_start = min(
-                available_ops,
-                key=lambda x: (calculate_slack(x), x[0]['Total_Proc_Min'])
-            )
         else:
             # Default fallback to SPT
             op, earliest_start = min(
@@ -310,7 +277,6 @@ class CNCScheduler:
             )
 
         return op, earliest_start
-
     def run_scheduling(self, heuristic='SPT', verbose=True):
         """Run the complete scheduling algorithm"""
         if verbose:

@@ -33,7 +33,15 @@ const HEURISTICS = [
 
 function ComputeControls() {
   const { enqueueSnackbar } = useSnackbar();
-  const { currentHeuristic, setMetrics, setSchedules, setLoading, loading } = useSchedulerStore();
+  // UPDATED: Added setCurrentSchedule to the destructuring
+  const { 
+    currentHeuristic, 
+    setMetrics, 
+    setCurrentSchedule, // <--- IMPORTANT: Needed to update the table
+    setLoading, 
+    loading 
+  } = useSchedulerStore();
+
   const [computeProgress, setComputeProgress] = useState({
     active: false,
     current: null,
@@ -118,6 +126,12 @@ function ComputeControls() {
     try {
       setLoading(true);
       const result = await applyHeuristic(currentHeuristic);
+      
+      // UPDATED: Immediately update the global schedule store
+      if (result.schedule) {
+        setCurrentSchedule(result.schedule);
+      }
+
       enqueueSnackbar(`${currentHeuristic} applied successfully!`, {
         variant: 'success',
       });

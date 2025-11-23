@@ -32,6 +32,7 @@ import {
   Add as AddIcon,
   Delete as DeleteIcon,
   Close as CloseIcon,
+  Warning as WarningIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import useSchedulerStore from '../store/useSchedulerStore';
@@ -93,15 +94,20 @@ function Dashboard() {
   const checkDataStatus = async () => {
     try {
       const result = await getDataInfo();
-      if (result.operations_count > 0) {
+      if (result.operations > 0) { // Changed from operations_count based on API standard
         setDataLoaded(true, {
-          operations: result.operations_count,
-          machines: result.machines_count,
-          jobs: result.jobs_count
+          operations: result.operations,
+          machines: result.machines,
+          jobs: result.jobs
         });
       }
     } catch (error) {
-      // Data not loaded yet, that's fine
+      // FIX: If backend returns 400 (Data not loaded), force frontend to match
+      console.warn("Backend empty, resetting frontend state.");
+      if (dataLoaded) {
+        setDataLoaded(false, null);
+        reset(); 
+      }
     }
   };
 
@@ -151,10 +157,14 @@ function Dashboard() {
       setLoading(true);
       enqueueSnackbar('Loading dataset...', { variant: 'info' });
       
+      // Standard load call
       const result = await loadData(50);
       
       setDataLoaded(true, result.stats);
       enqueueSnackbar('Data loaded successfully!', { variant: 'success' });
+      
+      // Optional: Refresh page to ensure clean state if forcing reload
+      // window.location.reload(); 
     } catch (error) {
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
         variant: 'error',
@@ -265,17 +275,28 @@ function Dashboard() {
     setNewJob({ ...newJob, operations: newOps });
   };
 
-
-
   return (
     <Container maxWidth="xl">
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h1" gutterBottom>
-          CNC Scheduling Dashboard
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Advanced production scheduling with AI-powered insights
-        </Typography>
+      {/* Header Section with Manual Force Load Button */}
+      <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Box>
+          <Typography variant="h1" gutterBottom>
+            CNC Scheduling Dashboard
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            Advanced production scheduling with AI-powered insights
+          </Typography>
+        </Box>
+        {/* FIX: Force Load Button - Always visible */}
+        <Button 
+          variant="outlined" 
+          color="warning" 
+          onClick={handleLoadData}
+          startIcon={loading ? <CircularProgress size={20} /> : <WarningIcon />}
+          disabled={loading}
+        >
+          Force Reload Data
+        </Button>
       </Box>
 
       {!dataLoaded ? (
@@ -525,126 +546,126 @@ function Dashboard() {
                     )}
                   </Box>
                 
-                <Grid container spacing={2}>
-                  <Grid item xs={12} sm={6}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Operation Type</InputLabel>
-                      <Select
-                        value={op.operation_type}
-                        onChange={(e) => updateOperation(index, 'operation_type', e.target.value)}
-                        label="Operation Type"
-                      >
-                        <MenuItem value="MILLING">MILLING (Machines: M1, M3, M4)</MenuItem>
-                        <MenuItem value="TURNING">TURNING (Machines: M6, M9)</MenuItem>
-                        <MenuItem value="DRILLING">DRILLING (Machines: M1, M3, M4)</MenuItem>
-                        <MenuItem value="GRINDING">GRINDING (Machines: M6, M9)</MenuItem>
-                      </Select>
-                    </FormControl>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} sm={6}>
+                      <FormControl fullWidth size="small">
+                        <InputLabel>Operation Type</InputLabel>
+                        <Select
+                          value={op.operation_type}
+                          onChange={(e) => updateOperation(index, 'operation_type', e.target.value)}
+                          label="Operation Type"
+                        >
+                          <MenuItem value="MILLING">MILLING (Machines: M1, M3, M4)</MenuItem>
+                          <MenuItem value="TURNING">TURNING (Machines: M6, M9)</MenuItem>
+                          <MenuItem value="DRILLING">DRILLING (Machines: M1, M3, M4)</MenuItem>
+                          <MenuItem value="GRINDING">GRINDING (Machines: M6, M9)</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Processing Time (min)"
+                        value={op.proc_time}
+                        onChange={(e) => updateOperation(index, 'proc_time', Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Setup Time (min)"
+                        value={op.setup_time}
+                        onChange={(e) => updateOperation(index, 'setup_time', Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Transfer Time (min)"
+                        value={op.transfer_time}
+                        onChange={(e) => updateOperation(index, 'transfer_time', Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Quantity"
+                        value={op.quantity}
+                        onChange={(e) => updateOperation(index, 'quantity', Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Release Day"
+                        value={op.release_day}
+                        onChange={(e) => updateOperation(index, 'release_day', Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Due Day"
+                        value={op.due_day}
+                        onChange={(e) => updateOperation(index, 'due_day', Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <FormControl fullWidth size="small">
+                        <InputLabel>Priority</InputLabel>
+                        <Select
+                          value={op.priority}
+                          onChange={(e) => updateOperation(index, 'priority', e.target.value)}
+                          label="Priority"
+                        >
+                          <MenuItem value="Low">Low</MenuItem>
+                          <MenuItem value="Medium">Medium</MenuItem>
+                          <MenuItem value="High">High</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Vendor Reference"
+                        value={op.vendor_ref}
+                        onChange={(e) => updateOperation(index, 'vendor_ref', e.target.value)}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Outsource Cost ($)"
+                        value={op.outsource_cost}
+                        onChange={(e) => updateOperation(index, 'outsource_cost', Number(e.target.value))}
+                      />
+                    </Grid>
                   </Grid>
-                  <Grid item xs={12} sm={6}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Processing Time (min)"
-                      value={op.proc_time}
-                      onChange={(e) => updateOperation(index, 'proc_time', Number(e.target.value))}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Setup Time (min)"
-                      value={op.setup_time}
-                      onChange={(e) => updateOperation(index, 'setup_time', Number(e.target.value))}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Transfer Time (min)"
-                      value={op.transfer_time}
-                      onChange={(e) => updateOperation(index, 'transfer_time', Number(e.target.value))}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Quantity"
-                      value={op.quantity}
-                      onChange={(e) => updateOperation(index, 'quantity', Number(e.target.value))}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Release Day"
-                      value={op.release_day}
-                      onChange={(e) => updateOperation(index, 'release_day', Number(e.target.value))}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Due Day"
-                      value={op.due_day}
-                      onChange={(e) => updateOperation(index, 'due_day', Number(e.target.value))}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Priority</InputLabel>
-                      <Select
-                        value={op.priority}
-                        onChange={(e) => updateOperation(index, 'priority', e.target.value)}
-                        label="Priority"
-                      >
-                        <MenuItem value="Low">Low</MenuItem>
-                        <MenuItem value="Medium">Medium</MenuItem>
-                        <MenuItem value="High">High</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12} sm={6}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="Vendor Reference"
-                      value={op.vendor_ref}
-                      onChange={(e) => updateOperation(index, 'vendor_ref', e.target.value)}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={6}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label="Outsource Cost ($)"
-                      value={op.outsource_cost}
-                      onChange={(e) => updateOperation(index, 'outsource_cost', Number(e.target.value))}
-                    />
-                  </Grid>
-                </Grid>
-              </Card>
-              {index < newJob.operations.length - 1 && (
-                <Box sx={{ textAlign: 'center', my: 1 }}>
-                  <Typography variant="h6" color="primary">↓</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Then execute
-                  </Typography>
-                </Box>
-              )}
-            </Box>
+                </Card>
+                {index < newJob.operations.length - 1 && (
+                  <Box sx={{ textAlign: 'center', my: 1 }}>
+                    <Typography variant="h6" color="primary">↓</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Then execute
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
             ))}
             
             <Button

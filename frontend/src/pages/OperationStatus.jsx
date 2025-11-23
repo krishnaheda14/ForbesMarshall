@@ -18,6 +18,7 @@ import {
   TextField,
   InputAdornment,
   Button,
+  CircularProgress
 } from '@mui/material';
 import { Search as SearchIcon, Download as DownloadIcon, Refresh as RefreshIcon } from '@mui/icons-material';
 import useSchedulerStore from '../store/useSchedulerStore';
@@ -26,35 +27,42 @@ import { getCurrentSchedule } from '../services/api';
 function OperationStatus() {
   const { currentHeuristic, currentSchedule, setCurrentSchedule } = useSchedulerStore();
   const [searchTerm, setSearchTerm] = useState('');
+  const [loading, setLoading] = useState(false);
 
+  // Initial fetch
   useEffect(() => {
-    if (currentHeuristic && !currentSchedule) {
+    if (currentHeuristic && (!currentSchedule || currentSchedule.length === 0)) {
       fetchSchedule();
     }
   }, [currentHeuristic]);
-  
-  // Auto-refresh when currentSchedule changes
+
+  // DEBUG: Print schedule to console to verify data
   useEffect(() => {
-    // This will cause re-render when schedule is updated elsewhere
+    console.log("Current Schedule Data:", currentSchedule);
   }, [currentSchedule]);
 
   const fetchSchedule = async () => {
     try {
+      setLoading(true);
       const result = await getCurrentSchedule();
-      setCurrentSchedule(result.schedule);
+      if (result && result.schedule) {
+        setCurrentSchedule(result.schedule);
+      }
     } catch (error) {
-      // Expected
+      console.error("Error fetching schedule:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleExport = () => {
     if (!currentSchedule || currentSchedule.length === 0) return;
 
-    const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Start_Time,End_Time,Status\n';
+    const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Start_Time,End_Time,Status,Priority\n';
     const csvRows = currentSchedule
       .map((op) => {
         const status = op.Tardiness > 0 ? 'Late' : 'On Time';
-        return `${op.Job_ID},${op.Operation_ID},${op.Machine_ID},${op.Start_Time},${op.End_Time},${status}`;
+        return `${op.Job_ID},${op.Operation_ID},${op.Machine_ID},${op.Start_Time},${op.End_Time},${status},${op.Priority}`;
       })
       .join('\n');
 
@@ -62,29 +70,59 @@ function OperationStatus() {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `operations_${currentHeuristic}.csv`;
+    a.download = `operations_${currentHeuristic || 'schedule'}.csv`;
     a.click();
   };
 
-  if (!currentHeuristic || !currentSchedule || currentSchedule.length === 0) {
+  // 1. Check if Heuristic is applied
+  if (!currentHeuristic) {
     return (
       <Container maxWidth="xl">
-        <Typography variant="h1" gutterBottom>
-          📋 Operation Status
-        </Typography>
+        <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
         <Alert severity="info">
-          No operation data available. Please apply a heuristic first.
+          No heuristic applied. Please go to the <strong>Dashboard</strong>, select a heuristic (e.g., SPT), click <strong>Compute</strong>, and then <strong>Apply</strong>.
         </Alert>
       </Container>
     );
   }
 
-  const filteredOperations = currentSchedule.filter(
-    (op) =>
-      op.Job_ID?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      op.Operation_ID?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      op.Machine_ID?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // 2. Check if Schedule exists
+  if (!currentSchedule || currentSchedule.length === 0) {
+    return (
+      <Container maxWidth="xl">
+        <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
+        <Alert severity="warning" action={
+          <Button color="inherit" size="small" onClick={fetchSchedule}>Try Refresh</Button>
+        }>
+          Heuristic is applied ({currentHeuristic}), but no schedule data was found.
+          <br />
+          <strong>Try clicking "Compute All" and "Apply" again on the Dashboard.</strong>
+        </Alert>
+      </Container>
+    );
+  }
+
+  // 3. Robust Filtering (Won't crash on nulls)
+  const filteredOperations = currentSchedule.filter((op) => {
+    const search = (searchTerm || '').toLowerCase();
+    if (!search) return true; // Show all if search is empty
+
+    // Safely convert fields to string before searching
+    const job = String(op.Job_ID || '').toLowerCase();
+    const operation = String(op.Operation_ID || '').toLowerCase();
+    const machine = String(op.Machine_ID || '').toLowerCase();
+    
+    return job.includes(search) || operation.includes(search) || machine.includes(search);
+  });
+
+  // Helper for Priority Colors (1=Red, 2=Orange, 3=Blue, 4=Grey)
+  const getPriorityColor = (priority) => {
+    const p = parseInt(priority);
+    if (p === 1) return 'error';      // High
+    if (p === 2) return 'warning';    // Medium-High
+    if (p === 3) return 'info';       // Medium-Low
+    return 'default';                 // Low
+  };
 
   return (
     <Container maxWidth="xl">
@@ -94,14 +132,15 @@ function OperationStatus() {
             📋 Operation Status
           </Typography>
           <Typography variant="body1" color="text.secondary">
-            Detailed view of all scheduled operations for {currentHeuristic}
+            Viewing <strong>{currentSchedule.length}</strong> operations for <strong>{currentHeuristic}</strong>
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Button
             variant="outlined"
-            startIcon={<RefreshIcon />}
+            startIcon={loading ? <CircularProgress size={20} /> : <RefreshIcon />}
             onClick={fetchSchedule}
+            disabled={loading}
           >
             Refresh
           </Button>
@@ -120,7 +159,7 @@ function OperationStatus() {
           <TextField
             fullWidth
             size="small"
-            placeholder="Search by Job ID, Operation ID, or Machine ID..."
+            placeholder="Search by Job, Operation, or Machine..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             sx={{ mb: 2 }}
@@ -142,79 +181,74 @@ function OperationStatus() {
                   <TableCell><strong>Priority</strong></TableCell>
                   <TableCell><strong>Assignment</strong></TableCell>
                   <TableCell><strong>Machine</strong></TableCell>
-                  <TableCell align="right"><strong>Start (min)</strong></TableCell>
-                  <TableCell align="right"><strong>End (min)</strong></TableCell>
-                  <TableCell align="right"><strong>Duration (min)</strong></TableCell>
-                  <TableCell align="right"><strong>Due Time (min)</strong></TableCell>
-                  <TableCell align="right"><strong>Tardiness (min)</strong></TableCell>
+                  <TableCell align="right"><strong>Start</strong></TableCell>
+                  <TableCell align="right"><strong>End</strong></TableCell>
+                  <TableCell align="right"><strong>Duration</strong></TableCell>
+                  <TableCell align="right"><strong>Due</strong></TableCell>
+                  <TableCell align="right"><strong>Tardiness</strong></TableCell>
                   <TableCell><strong>Status</strong></TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filteredOperations.map((op, index) => {
-                  const getPriorityColor = (priority) => {
-                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 3;
-                    if (p === 1) return 'error';      // High
-                    if (p === 3) return 'warning';    // Medium
-                    if (p === 5) return 'default';    // Low
-                    return 'default';
-                  };
-                  const getPriorityLabel = (priority) => {
-                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 3;
-                    if (p === 1) return 'High';
-                    if (p === 3) return 'Medium';
-                    if (p === 5) return 'Low';
-                    return `Priority ${p}`;
-                  };
-                  const assignmentType = op.Assignment_Type || (op.Machine_ID ? 'IN_HOUSE' : 'OUTSOURCE');
-                  const isOutsourced = assignmentType === 'OUTSOURCE';
-                  
-                  return (
-                  <TableRow key={index} sx={{ '&:hover': { bgcolor: 'action.hover' } }}>
-                    <TableCell><strong>{op.Job_ID}</strong></TableCell>
-                    <TableCell>{op.Operation_ID}</TableCell>
-                    <TableCell>
-                      <Chip
-                        label={getPriorityLabel(op.Priority || '3')}
-                        color={getPriorityColor(op.Priority || '3')}
-                        size="small"
-                        sx={{ fontWeight: 'bold' }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={isOutsourced ? 'Outsourced' : 'In-House'}
-                        color={isOutsourced ? 'secondary' : 'primary'}
-                        size="small"
-                        variant={isOutsourced ? 'filled' : 'outlined'}
-                        sx={{ fontWeight: 'bold' }}
-                      />
-                    </TableCell>
-                    <TableCell>{op.Machine_ID || '—'}</TableCell>
-                    <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
-                    <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
-                    <TableCell align="right">
-                      {(op.End_Time - op.Start_Time)?.toFixed(0)}
-                    </TableCell>
-                    <TableCell align="right">{op.Due_Time?.toFixed(0)}</TableCell>
-                    <TableCell align="right">
-                      <span style={{ color: op.Tardiness > 0 ? '#d32f2f' : '#2e7d32', fontWeight: 'bold' }}>
-                        {op.Tardiness > 0 ? op.Tardiness.toFixed(0) : '0'}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={op.Tardiness > 0 ? 'Late' : 'On Time'}
-                        color={op.Tardiness > 0 ? 'error' : 'success'}
-                        size="small"
-                      />
+                {filteredOperations.length > 0 ? (
+                  filteredOperations.map((op, index) => {
+                    const assignmentType = op.Assignment_Type || (op.Machine_ID === 'OUTSOURCE' ? 'OUTSOURCE' : 'IN_HOUSE');
+                    const isOutsourced = assignmentType === 'OUTSOURCE';
+                    
+                    return (
+                      <TableRow key={index} sx={{ '&:hover': { bgcolor: 'action.hover' } }}>
+                        <TableCell><strong>{op.Job_ID}</strong></TableCell>
+                        <TableCell>{op.Operation_ID}</TableCell>
+                        <TableCell>
+                          <Chip
+                            label={op.Priority}
+                            color={getPriorityColor(op.Priority)}
+                            size="small"
+                            sx={{ fontWeight: 'bold', minWidth: 30 }}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={isOutsourced ? 'Outsourced' : 'In-House'}
+                            color={isOutsourced ? 'secondary' : 'primary'}
+                            size="small"
+                            variant={isOutsourced ? 'filled' : 'outlined'}
+                          />
+                        </TableCell>
+                        <TableCell>{op.Machine_ID || '—'}</TableCell>
+                        <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
+                        <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
+                        <TableCell align="right">{(op.End_Time - op.Start_Time)?.toFixed(0)}</TableCell>
+                        <TableCell align="right">{op.Due_Time?.toFixed(0)}</TableCell>
+                        <TableCell align="right">
+                          <span style={{ color: op.Tardiness > 0 ? '#d32f2f' : '#2e7d32', fontWeight: 'bold' }}>
+                            {op.Tardiness > 0 ? op.Tardiness.toFixed(0) : '0'}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={op.Tardiness > 0 ? 'Late' : 'On Time'}
+                            color={op.Tardiness > 0 ? 'error' : 'success'}
+                            size="small"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : (
+                  // Fallback if filter matches nothing
+                  <TableRow>
+                    <TableCell colSpan={11} align="center" sx={{ py: 4 }}>
+                      <Typography variant="body1" color="text.secondary">
+                        No operations found matching "{searchTerm}"
+                      </Typography>
                     </TableCell>
                   </TableRow>
-                )})}
+                )}
               </TableBody>
             </Table>
           </TableContainer>
-
+          
           <Box sx={{ mt: 2 }}>
             <Typography variant="caption" color="text.secondary">
               Showing {filteredOperations.length} of {currentSchedule.length} operations
