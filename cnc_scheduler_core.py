@@ -383,9 +383,11 @@ class CNCScheduler:
             return int(op.get('Priority', 3))
 
         if heuristic == 'SPT':
-            return min(available_ops, key=lambda op: (safe_priority(op), op.get('Total_Proc_Min', 0)))
+            # SPT: choose by shortest processing time only (no priority preference)
+            return min(available_ops, key=lambda op: (op.get('Total_Proc_Min', 0), op.get('Due_Time_Min', 0), op.get('Operation_ID')))
         elif heuristic == 'EDD':
-            return min(available_ops, key=lambda op: (safe_priority(op), op.get('Due_Time_Min', 0)))
+            # EDD: choose by earliest due date only (no priority preference)
+            return min(available_ops, key=lambda op: (op.get('Due_Time_Min', 0), op.get('Total_Proc_Min', 0), op.get('Operation_ID')))
         elif heuristic == 'CR':
             return min(available_ops, key=lambda op: (safe_priority(op), op.get('Due_Time_Min', 0) - op.get('Release_Time_Min', 0)))
         elif heuristic == 'PRIORITY':

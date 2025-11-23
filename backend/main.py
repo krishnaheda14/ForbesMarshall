@@ -716,15 +716,30 @@ def update_priority(request: PriorityUpdateRequest):
         raise HTTPException(status_code=400, detail="Data not loaded")
     
     try:
-        job_mask = state.df_ops['Job_ID'] == request.job_id
+        # Normalize incoming job id and perform string-based match to avoid dtype/casing issues
+        incoming_job = str(request.job_id).strip()
+        df_job_ids = state.df_ops['Job_ID'].astype(str).str.strip()
+        job_mask = df_job_ids == incoming_job
         if not job_mask.any():
-            raise HTTPException(status_code=404, detail="Job not found")
-        
-        state.df_ops.loc[job_mask, 'Priority'] = int(request.priority)
+            # Provide a helpful debug message listing some available Job_IDs
+            sample_ids = state.df_ops['Job_ID'].astype(str).unique()[:10].tolist()
+            detail = f"Job '{incoming_job}' not found. Sample Job_IDs: {sample_ids}"
+            raise HTTPException(status_code=404, detail=detail)
+
+        # Cast priority safely
+        try:
+            new_prio = int(request.priority)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid priority value: {request.priority}")
+
+        state.df_ops.loc[job_mask, 'Priority'] = new_prio
         # If a baseline copy exists, update it as well so subsequent computations use the new priority
         if hasattr(state, 'base_df_ops') and state.base_df_ops is not None:
             try:
-                state.base_df_ops.loc[state.base_df_ops['Job_ID'] == request.job_id, 'Priority'] = int(request.priority)
+                base_job_ids = state.base_df_ops['Job_ID'].astype(str).str.strip()
+                base_mask = base_job_ids == incoming_job
+                if base_mask.any():
+                    state.base_df_ops.loc[base_mask, 'Priority'] = new_prio
             except Exception:
                 # Non-critical: continue even if baseline update fails
                 pass
@@ -744,8 +759,15 @@ def update_priority(request: PriorityUpdateRequest):
             "status": "success",
             "message": f"Priority updated for {request.job_id}. Schedules cleared - recompute heuristics to see impact."
         }
+    except HTTPException:
+        # Re-raise HTTP exceptions to preserve status codes/details
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        tb = traceback.format_exc()
+        # Log the traceback to the server console for diagnosis
+        print(f"[update_priority] Unexpected error updating priority for {request.job_id}: {e}\n{tb}")
+        raise HTTPException(status_code=500, detail=f"Internal server error updating priority for {request.job_id}: {str(e)}")
 
 @app.post("/api/outsourcing/policy")
 def update_outsourcing_policy(request: OutsourcingPolicyRequest):
