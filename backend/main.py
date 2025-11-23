@@ -432,14 +432,25 @@ def compute_heuristic(request: ComputeHeuristicRequest):
         )
         
         schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
-        # Merge in Priority and Assignment_Type from ops so frontend can render them
+
+        # Merge in Priority, Assignment_Type and supporting fields for CR debugging
         try:
             schedule_df = schedule.merge(
-                state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                state.df_ops[[
+                    'Operation_ID', 'Priority', 'Assignment_Type',
+                    'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min'
+                ]],
                 on='Operation_ID', how='left'
             )
             schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
             schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            try:
+                schedule_df['Critical_Ratio'] = schedule_df.apply(
+                    lambda r: (((r.get('Due_Time_Min') or 0) - (r.get('Release_Time_Min') or 0)) / (r.get('Total_Proc_Min') or 1)),
+                    axis=1
+                )
+            except Exception:
+                schedule_df['Critical_Ratio'] = None
         except Exception:
             schedule_df = schedule.copy()
 
@@ -457,7 +468,7 @@ def compute_heuristic(request: ComputeHeuristicRequest):
         return {
             "status": "success",
             "heuristic": heuristic,
-            "schedule": schedule.to_dict('records'),
+            "schedule": schedule_df.to_dict('records'),
             "metrics": metrics
         }
     except Exception as e:

@@ -389,7 +389,17 @@ class CNCScheduler:
             # EDD: choose by earliest due date only (no priority preference)
             return min(available_ops, key=lambda op: (op.get('Due_Time_Min', 0), op.get('Total_Proc_Min', 0), op.get('Operation_ID')))
         elif heuristic == 'CR':
-            return min(available_ops, key=lambda op: (safe_priority(op), op.get('Due_Time_Min', 0) - op.get('Release_Time_Min', 0)))
+            # Critical Ratio: (Due_Time - Release_Time) / Total_Proc_Min
+            # Lower CR means more urgent (less slack per unit proc time)
+            def cr_value(op):
+                proc = op.get('Total_Proc_Min', 1) or 1
+                window = op.get('Due_Time_Min', 0) - op.get('Release_Time_Min', 0)
+                try:
+                    return window / proc
+                except Exception:
+                    return float('inf')
+
+            return min(available_ops, key=lambda op: (cr_value(op), op.get('Due_Time_Min', 0), op.get('Total_Proc_Min', 0), op.get('Operation_ID')))
         elif heuristic == 'PRIORITY':
             return min(available_ops, key=lambda op: safe_priority(op))
         elif heuristic == 'WEIGHTED':

@@ -143,6 +143,9 @@ function OperationStatus() {
                   <TableCell><strong>Assignment</strong></TableCell>
                   <TableCell><strong>Machine</strong></TableCell>
                   <TableCell align="right"><strong>Proc Time (min)</strong></TableCell>
+                  {currentHeuristic === 'CR' && (
+                    <TableCell align="right"><strong>CR</strong></TableCell>
+                  )}
                   <TableCell align="right"><strong>Start (min)</strong></TableCell>
                   <TableCell align="right"><strong>End (min)</strong></TableCell>
                   <TableCell align="right"><strong>Duration (min)</strong></TableCell>
@@ -193,6 +196,9 @@ function OperationStatus() {
                     </TableCell>
                     <TableCell>{op.Machine_ID || '—'}</TableCell>
                     <TableCell align="right">{(op.Proc_Time != null ? op.Proc_Time.toFixed(0) : (op.Total_Proc_Min != null ? op.Total_Proc_Min.toFixed(0) : '—'))}</TableCell>
+                    {currentHeuristic === 'CR' && (
+                      <TableCell align="right">{op.Critical_Ratio != null ? Number(op.Critical_Ratio).toFixed(2) : '—'}</TableCell>
+                    )}
                     <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
                     <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
                     <TableCell align="right">
