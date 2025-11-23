@@ -28,7 +28,7 @@ import {
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import useSchedulerStore from '../store/useSchedulerStore';
-import { getMetricsComparison, getAIInsights, computeCPSATOptimal } from '../services/api';
+import { getMetricsComparison, getAIInsights } from '../services/api';
 import AIInsightsPanel from '../components/AIInsightsPanel';
 
 function Comparison() {
@@ -37,10 +37,6 @@ function Comparison() {
   const [loading, setLoading] = useState(false);
   const [aiInsights, setAiInsights] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
-  const [cpsatMetrics, setCpsatMetrics] = useState(null);
-  const [loadingCPSAT, setLoadingCPSAT] = useState(false);
-  const [cpsatExplanation, setCpsatExplanation] = useState(null);
-  const [explainingCPSAT, setExplainingCPSAT] = useState(false);
 
   useEffect(() => {
     fetchMetrics();
@@ -56,7 +52,8 @@ function Comparison() {
         const metricsObj = {};
         result.metrics.forEach((m) => {
           if (m.Heuristic) {
-            metricsObj[m.Heuristic] = { metrics: m };
+            // Store metrics under heuristic key directly (consistent shape expected elsewhere)
+            metricsObj[m.Heuristic] = m;
           }
         });
         setMetrics(metricsObj);
@@ -72,7 +69,7 @@ function Comparison() {
   const handleGetAIInsights = async () => {
     try {
       setLoadingAI(true);
-      const metricsData = Object.values(metrics).map((m) => m.metrics);
+      const metricsData = Object.values(metrics);
       
       const prompt = `Analyze the heuristic performance metrics and identify:
 - Which heuristic achieves the best overall performance and why
@@ -92,45 +89,9 @@ function Comparison() {
     }
   };
 
-  const handleComputeCPSAT = async () => {
-    if (!dataLoaded) {
-      enqueueSnackbar('Please load data first from the Dashboard before computing CP-SAT', { variant: 'warning' });
-      return;
-    }
-    try {
-      setLoadingCPSAT(true);
-      const result = await computeCPSATOptimal();
-      if (result.metrics) {
-        setCpsatMetrics(result.metrics);
-        enqueueSnackbar('CP-SAT optimal schedule computed!', { variant: 'success' });
-      }
-    } catch (error) {
-      enqueueSnackbar(`CP-SAT error: ${error.response?.data?.detail || error.message}`, { variant: 'error' });
-    } finally {
-      setLoadingCPSAT(false);
-    }
-  };
 
-  const handleExplainCPSAT = async () => {
-    if (!cpsatMetrics) return;
-    try {
-      setExplainingCPSAT(true);
-      const prompt = `Explain how the CP-SAT optimal scheduler works, what objective it solved, and how its results compare to the heuristics. Focus on makespan, tardiness, cost, and utilization. Here are the CP-SAT metrics: ${JSON.stringify(cpsatMetrics, null, 2)}`;
-      const result = await getAIInsights(prompt, { cpsat_metrics: cpsatMetrics });
-      setCpsatExplanation(result.insights);
-      enqueueSnackbar('CP-SAT explanation generated!', { variant: 'success' });
-    } catch (error) {
-      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, { variant: 'error' });
-    } finally {
-      setExplainingCPSAT(false);
-    }
-  };
-
-  // Table metrics array
-  const metricsArray = [
-    ...Object.values(metrics).map((m) => m.metrics),
-    ...(cpsatMetrics ? [{ ...cpsatMetrics, Heuristic: 'CP-SAT Optimal' }] : []),
-  ];
+  // Table metrics array (each entry is a metrics object)
+  const metricsArray = Object.values(metrics);
 
   if (metricsArray.length === 0) {
     return (
@@ -179,7 +140,6 @@ function Comparison() {
   const bestOnTime = findBest('On_Time_%', false);
   const bestUtilization = findBest('Machine_Utilization_%', false);
 
-  // Overall recommendation (weighted scoring)
   const calculateOverallScore = (m) => {
     return (
       (1 / (m.Makespan_Days || 1)) * 0.25 +
@@ -211,26 +171,6 @@ function Comparison() {
           </Typography>
         </Box>
         <Box sx={{ mb: 2, display: 'flex', gap: 2 }}>
-          <Button
-            variant="contained"
-            color="primary"
-            startIcon={<TrophyIcon />}
-            onClick={handleComputeCPSAT}
-            disabled={loadingCPSAT}
-          >
-            {loadingCPSAT ? 'Computing CP-SAT...' : 'Compute CP-SAT Optimal'}
-          </Button>
-          {cpsatMetrics && (
-            <Button
-              variant="outlined"
-              color="info"
-              startIcon={<AIIcon />}
-              onClick={handleExplainCPSAT}
-              disabled={explainingCPSAT}
-            >
-              {explainingCPSAT ? 'Explaining...' : 'Explain CP-SAT'}
-            </Button>
-          )}
           <Button
             variant="outlined"
             startIcon={<RefreshIcon />}
@@ -367,18 +307,7 @@ function Comparison() {
         </CardContent>
       </Card>
 
-      {/* CP-SAT Explanation Dialog */}
-      <Dialog open={!!cpsatExplanation} onClose={() => setCpsatExplanation(null)} maxWidth="md" fullWidth>
-        <DialogTitle>CP-SAT Optimal Schedule: AI Explanation</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body1" sx={{ whiteSpace: 'pre-line' }}>
-            {cpsatExplanation || 'Generating explanation...'}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCpsatExplanation(null)}>Close</Button>
-        </DialogActions>
-      </Dialog>
+      {/* Removed CP-SAT Explanation Dialog - Only our heuristics are shown */}
     </Container>
   );
 }

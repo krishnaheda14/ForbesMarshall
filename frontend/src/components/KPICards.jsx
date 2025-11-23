@@ -24,7 +24,8 @@ function KPICards() {
     );
   }
 
-  const currentMetrics = metrics[currentHeuristic]?.metrics || {};
+  // `metrics` in the store is shaped as { HEURISTIC_NAME: metricsObject }
+  const currentMetrics = metrics[currentHeuristic] || {};
 
   const kpiData = [
     {

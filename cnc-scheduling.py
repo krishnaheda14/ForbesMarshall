@@ -783,6 +783,19 @@ def load_all_data(sample_size=None, _cache_version=2):
 
     df_ops['Total_Proc_Min'] = df_ops['Proc_Time_per_Unit'] * df_ops['Quantity']
 
+    # --- Normalize Priority values to 1=High, 2=Medium, 3=Low ---
+    if 'Priority' in df_ops.columns:
+        def _norm_priority(p):
+            try:
+                pi = int(float(p))
+                return pi if pi in (1, 2, 3) else 3
+            except Exception:
+                pm = str(p).strip().capitalize()
+                return {'High': 1, 'Medium': 2, 'Low': 3}.get(pm, 2)
+
+        df_ops['Priority'] = df_ops['Priority'].apply(_norm_priority)
+        st.write(f"🔧 Normalized Priority values to 1-3 (High→1 .. Low→3). Unique now: {sorted(df_ops['Priority'].unique())}")
+
     # Normalize machines df columns
     if 'Speed Factor' not in df_machines.columns and 'SpeedFactor' in df_machines.columns:
         df_machines.rename(columns={'SpeedFactor': 'Speed Factor'}, inplace=True)
@@ -1167,69 +1180,51 @@ def create_operation_status_table(schedule_df, df_ops, _cache_key=None):
         due_time_min = op_row_def.get('Due_Time_Min', 0)
         total_proc_min = op_row_def.get('Total_Proc_Min', op_row_def.get('Proc_Time_per_Unit', 0) * op_row_def.get('Quantity', 1))
         assignment = op_row_def.get('Assignment_Type', 'IN_HOUSE')
-        priority = int(op_row_def.get('Priority', 3))
+        # --- Strict priority mapping: 1=High, 2=Medium, 3=Low ---
+        priority_raw = op_row_def.get('Priority', 2)
+        priority_map = {
+            'High': 1,
+            'Medium': 2,
+            'Low': 3,
+            1: 1,
+            2: 2,
+            3: 3
+        }
+        if isinstance(priority_raw, str):
+            priority = priority_map.get(priority_raw.capitalize(), 2)
+        else:
+            priority = priority_map.get(priority_raw, 2)
         job_id = op_row_def.get('Job_ID', None)
 
-        # <<< NEW: Variable to hold machine assignment >>>
-        machine_assigned = 'N/A'
-
-        # CASE 1: Scheduled
+        # Only show scheduled operations (hide pending/unscheduled)
         if not op_row_sched.empty:
             finish_time = op_row_sched['End_Time'].max()
             finish_day = finish_time / 480
             tardiness_days = max(0, (finish_time - due_time_min) / 480)
             status = "On-Time" if tardiness_days == 0 else "Late"
-
-            # <<< NEW: Get the assigned machine from the schedule >>>
             try:
                 machine_assigned = op_row_sched['Machine_ID'].iloc[0]
             except IndexError:
                 machine_assigned = 'Error'
 
-        # CASE 2: Outsourced
-        elif assignment == "OUTSOURCE":
-            est_finish_time = op_row_def.get('Release_Time_Min', 0) + op_row_def.get('Outsource_Time_Min', 0)
-            finish_time = est_finish_time
-            finish_day = finish_time / 480
-            tardiness_days = max(0, (finish_time - due_time_min) / 480)
-            status = "Outsourced" if tardiness_days == 0 else "Outsource Delay"
-            
-            # <<< NEW: Set machine to 'OUTSOURCE' >>>
-            machine_assigned = 'OUTSOURCE'
+            # Critical Ratio
+            time_remaining = max(0, due_time_min - finish_time)
+            cr_value = round(time_remaining / max(total_proc_min, 1), 2)
 
-        # CASE 3: Pending
-        else:
-            finish_time = current_time
-            finish_day = finish_time / 480
-
-            if current_time > due_time_min:
-                tardiness_days = round((current_time - due_time_min) / 480, 2)
-                status = "Overdue (Pending)"
-            else:
-                tardiness_days = 0
-                status = "Pending"
-
-            # <<< NEW: Set machine to 'PENDING' >>>
-            machine_assigned = 'PENDING'
-
-        # Critical Ratio
-        time_remaining = max(0, due_time_min - finish_time)
-        cr_value = round(time_remaining / max(total_proc_min, 1), 2)
-
-        op_status.append({
-            'Job_ID': job_id,
-            'Operation_ID': op_id,
-            'Machine_ID': machine_assigned,  # <<< NEW: Added to dictionary >>>
-            'Priority': priority,
-            'Assignment': assignment,
-            'Total_Proc_Min': round(total_proc_min, 2),
-            'CR_Value': cr_value,
-            'Finish_Day': round(finish_day, 2),
-            'Due_Day': round(due_time_min / 480, 2),
-            'Tardiness_Days': round(tardiness_days, 2),
-            'Status': status,
-            'Updated': time.strftime("%H:%M:%S")
-        })
+            op_status.append({
+                'Job_ID': job_id,
+                'Operation_ID': op_id,
+                'Machine_ID': machine_assigned,
+                'Priority': priority,
+                'Assignment': assignment,
+                'Total_Proc_Min': round(total_proc_min, 2),
+                'CR_Value': cr_value,
+                'Finish_Day': round(finish_day, 2),
+                'Due_Day': round(due_time_min / 480, 2),
+                'Tardiness_Days': round(tardiness_days, 2),
+                'Status': status,
+                'Updated': time.strftime("%H:%M:%S")
+            })
 
     op_status_df = pd.DataFrame(op_status)
 
@@ -1244,25 +1239,30 @@ def create_operation_status_table(schedule_df, df_ops, _cache_key=None):
     op_status_df = op_status_df[final_columns]
 
 
-    # Sorting based on active heuristic
+    # --- Sort operations based on applied heuristic ---
     heuristic = st.session_state.current_heuristic if 'current_heuristic' in st.session_state and st.session_state.current_heuristic else 'SPT'
     if heuristic == 'SPT':
-        op_status_df = op_status_df.sort_values(['Priority', 'Total_Proc_Min']).reset_index(drop=True)
-        sort_label = "Priority → SPT (Total Processing Time)"
+        op_status_df = op_status_df.sort_values(['Total_Proc_Min', 'Priority']).reset_index(drop=True)
+        sort_label = "SPT (Shortest Processing Time)"
     elif heuristic == 'EDD':
-        op_status_df = op_status_df.sort_values(['Priority', 'Due_Day']).reset_index(drop=True)
-        sort_label = "Priority → EDD (Due Day)"
+        op_status_df = op_status_df.sort_values(['Due_Day', 'Priority']).reset_index(drop=True)
+        sort_label = "EDD (Earliest Due Date)"
     elif heuristic == 'CR':
-        op_status_df = op_status_df.sort_values(['Priority', 'CR_Value']).reset_index(drop=True)
-        sort_label = "Priority → CR (Critical Ratio)"
+        op_status_df = op_status_df.sort_values(['CR_Value', 'Priority']).reset_index(drop=True)
+        sort_label = "CR (Critical Ratio)"
     elif heuristic == 'PRIORITY':
-        op_status_df = op_status_df.sort_values(['Priority']).reset_index(drop=True)
-        sort_label = "Priority Only"
+        # Debug: Check strict priority mapping
+        unique_priorities = sorted(op_status_df['Priority'].unique())
+        dbg(f"PRIORITY DEBUG: Unique priority values in table: {unique_priorities}")
+        if not set(unique_priorities).issubset({1,2,3}):
+            st.warning(f"⚠️ Priority values are not strictly mapped to 1=High, 2=Medium, 3=Low. Found: {unique_priorities}")
+        op_status_df = op_status_df.sort_values(['Priority', 'Finish_Day']).reset_index(drop=True)
+        sort_label = "PRIORITY (Job Priority: Priority, Finish Day)"
     else:
-        op_status_df = op_status_df.sort_values(['Priority', 'Due_Day']).reset_index(drop=True)
-        sort_label = "Priority → Due Date (Fallback)"
+        op_status_df = op_status_df.sort_values(['Total_Proc_Min', 'Priority']).reset_index(drop=True)
+        sort_label = f"Default ({heuristic})"
 
-    st.caption(f"📋 Active Sorting Rule: {sort_label}")
+    st.caption(f"📋 Sorted by: {sort_label}")
     return op_status_df
 
 # ---------------------------
@@ -2037,7 +2037,8 @@ def draw_priority_manager(ss):
     with st.sidebar.expander("⚡ Job Priority Manager"):
         job_list = ss.df_ops['Job_ID'].unique()
         priority_job = st.selectbox("Job ID:", job_list, key='priority_job')
-        new_priority = st.radio("New Priority (1=Highest, 4=Lowest):", [1, 2, 3, 4], index=1, horizontal=True, key='priority_val')
+        # Keep radio limited to 1-3 (1=Highest, 3=Lowest) — dataset is normalized on load
+        new_priority = st.radio("New Priority (1=Highest, 3=Lowest):", [1, 2, 3], index=1, horizontal=True, key='priority_val')
 
         if st.button("Update Priority", key='priority_button'):
             with st.spinner(f"Updating {priority_job} to P{new_priority}..."):
@@ -2058,23 +2059,28 @@ def draw_priority_manager(ss):
                     'affected_items': priority_job
                 })
 
-                # ✅ Mark recomputation required
+                # ✅ Mark recomputation required and attempt immediate recompute so UI reflects change
                 ss.triggered_by_priority_manager = True
-                ss.recalculate_all_heuristics = True
-                ss.breakdown_pending = True
-                ss.breakdown_message_visible = True   # <-- same variable as breakdown
                 ss.current_page = "comparison"
 
-                # ✅ Clean up caches
+                # Clean caches
                 st.cache_data.clear()
                 st.cache_resource.clear()
 
                 st.success(f"✅ Priority for {priority_job} updated to P{new_priority}.")
-                st.toast("⚙ Priority changed — please recompute heuristics.", icon="⚙️")
-                trigger_recompute_prompt(ss, f"Priority for {priority_job} updated to P{new_priority}")
-        
+                st.toast("⚙ Priority changed — recomputing heuristics now.", icon="⚙️")
 
-                st.rerun()
+                # Attempt immediate recomputation so the operations table and schedules update
+                try:
+                    compute_all_heuristics_and_metrics(ss, show_progress=True)
+                except Exception as e:
+                    # If immediate recompute fails for any reason, fall back to prompting the user
+                    st.warning(f"Recompute failed: {e}. Please click 'Compute All Heuristics' in the sidebar.")
+                    ss.recalculate_all_heuristics = True
+                    ss.breakdown_message_visible = True
+                    trigger_recompute_prompt(ss, f"Priority for {priority_job} updated to P{new_priority}")
+
+                # compute_all_heuristics_and_metrics will call st.rerun() on completion
 
     # ✅ Persistent message (same as breakdown)
     if hasattr(ss, "breakdown_message_visible") and ss.breakdown_message_visible:

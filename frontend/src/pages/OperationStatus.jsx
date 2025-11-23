@@ -153,17 +153,17 @@ function OperationStatus() {
               <TableBody>
                 {filteredOperations.map((op, index) => {
                   const getPriorityColor = (priority) => {
-                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 3;
+                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 2;
                     if (p === 1) return 'error';      // High
-                    if (p === 3) return 'warning';    // Medium
-                    if (p === 5) return 'default';    // Low
+                    if (p === 2) return 'warning';    // Medium
+                    if (p === 3) return 'default';    // Low
                     return 'default';
                   };
                   const getPriorityLabel = (priority) => {
-                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 3;
+                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 2;
                     if (p === 1) return 'High';
-                    if (p === 3) return 'Medium';
-                    if (p === 5) return 'Low';
+                    if (p === 2) return 'Medium';
+                    if (p === 3) return 'Low';
                     return `Priority ${p}`;
                   };
                   const assignmentType = op.Assignment_Type || (op.Machine_ID ? 'IN_HOUSE' : 'OUTSOURCE');
@@ -175,8 +175,8 @@ function OperationStatus() {
                     <TableCell>{op.Operation_ID}</TableCell>
                     <TableCell>
                       <Chip
-                        label={getPriorityLabel(op.Priority || '3')}
-                        color={getPriorityColor(op.Priority || '3')}
+                        label={getPriorityLabel(op.Priority)}
+                        color={getPriorityColor(op.Priority)}
                         size="small"
                         sx={{ fontWeight: 'bold' }}
                       />

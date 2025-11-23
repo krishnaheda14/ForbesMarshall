@@ -98,23 +98,31 @@ function MachineryControls() {
   const handleOutsourcingUpdate = async () => {
     try {
       const result = await updateOutsourcingPolicy(costThreshold);
-      
-      // Update metrics in store for all recomputed heuristics
+
+      // Update metrics in store for recomputed heuristics
+      const { metrics: existingMetrics, setMetrics } = useSchedulerStore.getState();
       if (result.metrics) {
-        Object.entries(result.metrics).forEach(([heur, metrics]) => {
-          useSchedulerStore.getState().addSchedule(heur, result.metrics[heur], metrics);
-        });
+        // result.metrics is a dict { heur: metrics }
+        // Merge with existing metrics in store
+        setMetrics({ ...(existingMetrics || {}), ...(result.metrics || {}) });
       }
-      
+
       enqueueSnackbar(
         `${result.message} ${result.new_outsourced_count}/${result.total_operations} operations outsourced.`, 
         { variant: 'success' }
       );
-      
-      // Refresh schedule if a heuristic is active
+
+      // Refresh schedule if a heuristic is active: fetch current schedule from backend
       if (currentHeuristic) {
-        const scheduleResult = await getCurrentSchedule();
-        setCurrentSchedule(scheduleResult.schedule);
+        try {
+          const scheduleResult = await getCurrentSchedule();
+          if (scheduleResult && scheduleResult.schedule) {
+            setCurrentSchedule(scheduleResult.schedule);
+          }
+        } catch (err) {
+          // Non-fatal: user can refresh manually
+          console.warn('Failed to refresh schedule after outsourcing update', err);
+        }
       }
     } catch (error) {
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
@@ -216,13 +224,13 @@ function MachineryControls() {
             InputProps={{ style: { color: 'white' } }}
           />
           <Typography variant="caption" gutterBottom>
-            Priority: {priority} (1=Highest, 4=Lowest)
+            Priority: {priority} (1=Highest, 3=Lowest)
           </Typography>
           <Slider
             value={priority}
             onChange={(e, val) => setPriority(val)}
             min={1}
-            max={4}
+            max={3}
             step={1}
             marks
             sx={{ mb: 1.5, color: 'white' }}

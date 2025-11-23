@@ -16,8 +16,6 @@ const heuristics = [
   { value: 'EDD', label: 'EDD', description: 'Earliest Due Date' },
   { value: 'CR', label: 'CR', description: 'Critical Ratio' },
   { value: 'PRIORITY', label: 'PRIORITY', description: 'Priority-Based' },
-  { value: 'WEIGHTED', label: 'WEIGHTED', description: 'Multi-Objective' },
-  { value: 'SLACK', label: 'SLACK', description: 'Minimum Slack' },
 ];
 
 function HeuristicSelector() {

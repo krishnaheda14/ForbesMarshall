@@ -13,7 +13,11 @@ import requests
 
 # Import scheduling logic from existing file
 import sys
-sys.path.append('..')
+# Ensure project root is on sys.path regardless of current working directory
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from cnc_scheduler_core import (
     CNCScheduler,
     parse_maintenance,
@@ -255,8 +259,6 @@ This is a CNC job scheduling application with 6 heuristics:
 - EDD (Earliest Due Date): Prioritizes jobs with nearest deadlines
 - CR (Critical Ratio): Uses due_date/processing_time ratio
 - PRIORITY (Job priority-based): Schedules based on job priority values (1=High, 2=Medium, 3=Low)
-- WEIGHTED (Multi-objective): Balances priority, slack time, and processing time with weights
-- SLACK (Minimum slack time): Schedules jobs with least slack (due_time - current_time - processing_time)
 
 {prompt}
 """
@@ -418,7 +420,7 @@ def compute_heuristic(request: ComputeHeuristicRequest):
         raise HTTPException(status_code=400, detail="Data not loaded")
     
     heuristic = request.heuristic.upper()
-    if heuristic not in ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK']:
+    if heuristic not in ['SPT', 'EDD', 'CR', 'PRIORITY']:
         raise HTTPException(status_code=400, detail="Invalid heuristic")
     
     try:
@@ -430,9 +432,20 @@ def compute_heuristic(request: ComputeHeuristicRequest):
         )
         
         schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
-        metrics = calculate_metrics(schedule, state.df_ops, heuristic)
-        
-        state.schedules[heuristic] = schedule
+        # Merge in Priority and Assignment_Type from ops so frontend can render them
+        try:
+            schedule_df = schedule.merge(
+                state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                on='Operation_ID', how='left'
+            )
+            schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+            schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+        except Exception:
+            schedule_df = schedule.copy()
+
+        metrics = calculate_metrics(schedule_df, state.df_ops, heuristic)
+
+        state.schedules[heuristic] = schedule_df
         state.metrics[heuristic] = metrics
         
         state.activity_log.append({
@@ -456,7 +469,7 @@ def compute_all_heuristics():
     if state.df_ops is None:
         raise HTTPException(status_code=400, detail="Data not loaded")
     
-    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK']
+    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
     results = {}
     
     try:
@@ -469,9 +482,19 @@ def compute_all_heuristics():
             )
             
             schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
-            metrics = calculate_metrics(schedule, state.df_ops, heur)
-            
-            state.schedules[heur] = schedule
+            try:
+                schedule_df = schedule.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            except Exception:
+                schedule_df = schedule.copy()
+
+            metrics = calculate_metrics(schedule_df, state.df_ops, heur)
+
+            state.schedules[heur] = schedule_df
             state.metrics[heur] = metrics
             
             results[heur] = {
@@ -521,6 +544,17 @@ def run_cpsat(request: CPSATRequest):
         )
 
         schedule_df = pd.DataFrame(result.schedule)
+        # Merge Priority & Assignment_Type into CPSAT schedule if available
+        try:
+            schedule_df = schedule_df.merge(
+                state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                on='Operation_ID', how='left'
+            )
+            schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+            schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+        except Exception:
+            pass
+
         # Compute metrics (reuse calculate_metrics but heuristic label = CPSAT)
         metrics = calculate_metrics(schedule_df, state.df_ops, 'CPSAT')
 
@@ -562,6 +596,17 @@ def apply_heuristic(request: ApplyHeuristicRequest):
     
     try:
         schedule_df = state.schedules[heuristic].copy()
+        # Ensure schedule contains Priority and Assignment_Type
+        if 'Priority' not in schedule_df.columns or 'Assignment_Type' not in schedule_df.columns:
+            try:
+                schedule_df = schedule_df.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            except Exception:
+                pass
         state.current_heuristic = heuristic
         
         state.activity_log.append({
@@ -589,11 +634,26 @@ def get_current_schedule():
     if schedule is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
     
-    return {
-        "heuristic": state.current_heuristic,
-        "schedule": schedule.to_dict('records'),
-        "metrics": state.metrics.get(state.current_heuristic, {})
-    }
+    try:
+        schedule_df = schedule.copy()
+        if 'Priority' not in schedule_df.columns or 'Assignment_Type' not in schedule_df.columns:
+            try:
+                schedule_df = schedule_df.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            except Exception:
+                pass
+
+        return {
+            "heuristic": state.current_heuristic,
+            "schedule": schedule_df.to_dict('records'),
+            "metrics": state.metrics.get(state.current_heuristic, {})
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/machine/breakdown")
 def simulate_breakdown(request: MachineBreakdownRequest):
@@ -660,7 +720,14 @@ def update_priority(request: PriorityUpdateRequest):
         if not job_mask.any():
             raise HTTPException(status_code=404, detail="Job not found")
         
-        state.df_ops.loc[job_mask, 'Priority'] = request.priority
+        state.df_ops.loc[job_mask, 'Priority'] = int(request.priority)
+        # If a baseline copy exists, update it as well so subsequent computations use the new priority
+        if hasattr(state, 'base_df_ops') and state.base_df_ops is not None:
+            try:
+                state.base_df_ops.loc[state.base_df_ops['Job_ID'] == request.job_id, 'Priority'] = int(request.priority)
+            except Exception:
+                # Non-critical: continue even if baseline update fails
+                pass
         
         # Clear cached schedules to force recomputation
         state.schedules = {}
@@ -697,9 +764,19 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
             decisions.append({'Operation_ID': op['Operation_ID'], 'Decision': result[0] if result else 'IN_HOUSE'})
         
         df_decisions = pd.DataFrame(decisions)
-        state.df_ops = state.df_ops.merge(df_decisions, on='Operation_ID', how='left', suffixes=('', '_new'))
-        state.df_ops['Assignment_Type'] = state.df_ops['Decision_new'].fillna('IN_HOUSE')
-        state.df_ops.drop(columns=['Decision_new'], inplace=True, errors='ignore')
+        merged = state.df_ops.merge(df_decisions, on='Operation_ID', how='left', suffixes=('', '_new'))
+        # The merge may create either 'Decision' or 'Decision_new' depending on existing columns.
+        if 'Decision_new' in merged.columns:
+            merged['Assignment_Type'] = merged['Decision_new'].fillna('IN_HOUSE')
+            merged.drop(columns=['Decision_new'], inplace=True, errors='ignore')
+        elif 'Decision' in merged.columns:
+            merged['Assignment_Type'] = merged['Decision'].fillna('IN_HOUSE')
+            merged.drop(columns=['Decision'], inplace=True, errors='ignore')
+        else:
+            # Fallback: assume IN_HOUSE if nothing available
+            merged['Assignment_Type'] = 'IN_HOUSE'
+
+        state.df_ops = merged
         
         new_outsourced = len(state.df_ops[state.df_ops['Assignment_Type'] == 'OUTSOURCE'])
         
@@ -714,11 +791,21 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
                 state.df_effective.copy(),
                 state.df_penalties.copy()
             )
-            
+
             schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
-            metrics = calculate_metrics(schedule, state.df_ops, heur)
-            
-            state.schedules[heur] = schedule
+            try:
+                schedule_df = schedule.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            except Exception:
+                schedule_df = schedule.copy()
+
+            metrics = calculate_metrics(schedule_df, state.df_ops, heur)
+
+            state.schedules[heur] = schedule_df
             state.metrics[heur] = metrics
             recomputed_metrics[heur] = metrics
         
@@ -1017,8 +1104,9 @@ def add_job(request: dict):
             op_id = f"{job_id}_OP{i+1}"
             # Convert priority string to numeric
             priority_str = op.get('priority', 'Medium')
-            priority_map = {'High': 1, 'Medium': 3, 'Low': 5, 1: 1, 3: 3, 5: 5}
-            priority_num = priority_map.get(priority_str, 3)
+            # Normalize to 1=High, 2=Medium, 3=Low
+            priority_map = {'High': 1, 'Medium': 2, 'Low': 3, 1: 1, 2: 2, 3: 3}
+            priority_num = priority_map.get(priority_str, 2)
             
             new_op = {
                 'Job_ID': job_id,
@@ -1330,13 +1418,13 @@ async def load_excel_and_schedule(
                     else:
                         release_day = 0
             
-            # Handle priority - convert to numeric
-            priority = 3  # default medium priority
+            # Handle priority - convert to numeric (1=High,2=Medium,3=Low)
+            priority = 2  # default medium priority
             if job.priority_numeric:
-                priority = job.priority_numeric
+                priority = int(job.priority_numeric)
             elif job.priority:
-                priority_map = {'HIGH': 1, 'A': 1, 'MEDIUM': 3, 'B': 3, 'LOW': 5, 'C': 5}
-                priority = priority_map.get(str(job.priority).upper(), 3)
+                priority_map = {'HIGH': 1, 'A': 1, 'MEDIUM': 2, 'B': 2, 'LOW': 3, 'C': 3}
+                priority = priority_map.get(str(job.priority).upper(), 2)
             
             jobs_data.append({
                 'Job_ID': job.job_id,

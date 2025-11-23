@@ -79,7 +79,14 @@ function ComputeControls() {
         current: 'Finalizing results...',
       }));
       
-      setMetrics(result.results);
+      // result.results has structure { HEUR: { schedule_size, metrics } }
+      if (result && result.results) {
+        const metricsObj = {};
+        Object.entries(result.results).forEach(([h, val]) => {
+          metricsObj[h] = val.metrics || {};
+        });
+        setMetrics(metricsObj);
+      }
       
       const finalElapsed = ((Date.now() - computeProgress.startTime) / 1000).toFixed(1);
       
@@ -118,6 +125,16 @@ function ComputeControls() {
     try {
       setLoading(true);
       const result = await applyHeuristic(currentHeuristic);
+      // Save schedule & metrics in store so Operations view updates immediately
+      const { setCurrentSchedule, addSchedule } = useSchedulerStore.getState();
+      if (result && result.schedule) {
+        setCurrentSchedule(result.schedule);
+      }
+      if (result && result.metrics) {
+        // store the schedule+metrics under the heuristic
+        addSchedule(currentHeuristic, result.schedule || [], result.metrics);
+      }
+
       enqueueSnackbar(`${currentHeuristic} applied successfully!`, {
         variant: 'success',
       });
