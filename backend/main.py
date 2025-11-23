@@ -250,13 +250,11 @@ def get_ai_insights(prompt: str, context_data: Optional[Dict] = None):
 You are an expert in manufacturing scheduling, operations research, and production planning.
 
 **CONTEXT:**
-This is a CNC job scheduling application with 6 heuristics:
+This is a CNC job scheduling application with 4 heuristics:
 - SPT (Shortest Processing Time): Schedules shortest jobs first
 - EDD (Earliest Due Date): Prioritizes jobs with nearest deadlines
 - CR (Critical Ratio): Uses due_date/processing_time ratio
 - PRIORITY (Job priority-based): Schedules based on job priority values (1=High, 2=Medium, 3=Low)
-- WEIGHTED (Multi-objective): Balances priority, slack time, and processing time with weights
-- SLACK (Minimum slack time): Schedules jobs with least slack (due_time - current_time - processing_time)
 
 {prompt}
 """
@@ -386,22 +384,32 @@ def get_data_info():
 def get_machine_data():
     """Get machine data including maintenance windows"""
     if state.df_machines is None:
-        # Return empty data instead of error to allow graceful handling
         return {"machines": [], "count": 0, "message": "No data loaded yet"}
     
     try:
-        # Convert DataFrame to dict, handling NaN values
-        machines = state.df_machines.fillna('').to_dict('records')
+        # Convert DataFrame to dict
+        # We avoid .fillna('') on the whole DF because it can corrupt lists
+        machines = state.df_machines.to_dict('records')
         
-        # Clean up any remaining NaN or None values
         cleaned_machines = []
         for machine in machines:
             cleaned_machine = {}
             for key, value in machine.items():
-                if pd.isna(value) or value == 'nan':
-                    cleaned_machine[key] = None
-                else:
+                # 1. If it's a list/dict (like Maintenance Window), keep it as is
+                if isinstance(value, (list, dict)):
                     cleaned_machine[key] = value
+                    continue
+                
+                # 2. Handle scalar values safely
+                try:
+                    if value is None or pd.isna(value) or str(value).lower() == 'nan':
+                        cleaned_machine[key] = None
+                    else:
+                        cleaned_machine[key] = value
+                except Exception:
+                    # Fallback for any types that confuse pd.isna
+                    cleaned_machine[key] = str(value)
+            
             cleaned_machines.append(cleaned_machine)
         
         return {"machines": cleaned_machines, "count": len(cleaned_machines)}
@@ -410,7 +418,6 @@ def get_machine_data():
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching machine data: {str(e)}")
-
 @app.post("/api/schedule/compute")
 def compute_heuristic(request: ComputeHeuristicRequest):
     """Compute schedule for a specific heuristic"""
@@ -418,8 +425,11 @@ def compute_heuristic(request: ComputeHeuristicRequest):
         raise HTTPException(status_code=400, detail="Data not loaded")
     
     heuristic = request.heuristic.upper()
-    if heuristic not in ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK']:
-        raise HTTPException(status_code=400, detail="Invalid heuristic")
+    # REMOVE 'WEIGHTED' AND 'SLACK' FROM THIS LIST
+    if heuristic not in ['SPT', 'EDD', 'CR', 'PRIORITY']:
+        raise HTTPException(status_code=400, detail="Invalid heuristic. Allowed: SPT, EDD, CR, PRIORITY")
+    
+    # ... rest of function
     
     try:
         scheduler = CNCScheduler(
@@ -456,11 +466,13 @@ def compute_all_heuristics():
     if state.df_ops is None:
         raise HTTPException(status_code=400, detail="Data not loaded")
     
-    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY', 'WEIGHTED', 'SLACK']
+    # UPDATE THIS LIST TO ONLY INCLUDE THE 4 ACTIVE HEURISTICS
+    heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
     results = {}
     
     try:
         for heur in heuristics:
+            # ... (logic remains the same)
             scheduler = CNCScheduler(
                 state.df_ops.copy(),
                 state.df_machines.copy(),
@@ -690,20 +702,37 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
         old_threshold = state.cost_threshold
         state.cost_threshold = request.cost_threshold
         
-        # Recalculate make-or-buy decisions
+        # 1. Recalculate make-or-buy decisions
         decisions = []
         for idx, op in state.df_ops.iterrows():
             result = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
-            decisions.append({'Operation_ID': op['Operation_ID'], 'Decision': result[0] if result else 'IN_HOUSE'})
+            # FIX: Use a unique name 'New_Decision' to avoid merge conflicts/suffixes
+            decisions.append({
+                'Operation_ID': op['Operation_ID'], 
+                'New_Decision': result[0] if result else 'IN_HOUSE'
+            })
         
         df_decisions = pd.DataFrame(decisions)
-        state.df_ops = state.df_ops.merge(df_decisions, on='Operation_ID', how='left', suffixes=('', '_new'))
-        state.df_ops['Assignment_Type'] = state.df_ops['Decision_new'].fillna('IN_HOUSE')
-        state.df_ops.drop(columns=['Decision_new'], inplace=True, errors='ignore')
+        
+        # 2. Clean Merge
+        # Drop temp column if it exists from a previous run
+        if 'New_Decision' in state.df_ops.columns:
+            state.df_ops.drop(columns=['New_Decision'], inplace=True)
+            
+        state.df_ops = state.df_ops.merge(df_decisions, on='Operation_ID', how='left')
+        
+        # 3. Update Assignments
+        state.df_ops['Assignment_Type'] = state.df_ops['New_Decision'].fillna('IN_HOUSE')
+        
+        # 4. Cleanup
+        state.df_ops.drop(columns=['New_Decision'], inplace=True, errors='ignore')
+        # Optional: Drop the old 'Decision' column if it exists to keep DF clean
+        if 'Decision' in state.df_ops.columns:
+            state.df_ops.drop(columns=['Decision'], inplace=True, errors='ignore')
         
         new_outsourced = len(state.df_ops[state.df_ops['Assignment_Type'] == 'OUTSOURCE'])
         
-        # Recompute ALL heuristics that have been computed to update KPIs
+        # 5. Recompute ALL active heuristics to reflect new assignments
         heuristics_to_recompute = list(state.schedules.keys())
         recomputed_metrics = {}
         
@@ -725,20 +754,21 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
         state.activity_log.append({
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'action': 'Outsourcing Policy Updated',
-            'details': f"Threshold: {old_threshold} → {request.cost_threshold}, Outsourced: {new_outsourced}, Recomputed: {', '.join(heuristics_to_recompute)}"
+            'details': f"Threshold: {old_threshold} -> {request.cost_threshold}, Outsourced: {new_outsourced}, Recomputed: {', '.join(heuristics_to_recompute)}"
         })
         
         return {
             "status": "success",
-            "message": f"Outsourcing policy updated. {len(heuristics_to_recompute)} heuristic(s) recomputed with new KPIs.",
+            "message": f"Outsourcing policy updated. {len(heuristics_to_recompute)} heuristic(s) recomputed.",
             "new_outsourced_count": new_outsourced,
             "total_operations": len(state.df_ops),
             "heuristics_recomputed": heuristics_to_recompute,
             "metrics": recomputed_metrics
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        # Print error to console for easier debugging
+        print(f"Error in update_outsourcing_policy: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Policy update failed: {str(e)}")
 @app.post("/api/ai/insights")
 def get_insights(request: AIInsightRequest):
     """Get AI-powered insights"""
@@ -988,11 +1018,8 @@ def unload_data():
 @app.post("/api/job/add")
 def add_job(request: dict):
     """
-    Add a new job with operations
-    
-    Important: Operations are executed in sequence order (Op_Seq).
-    The scheduler ensures that operation N+1 only starts after operation N completes.
-    For example: Turning (Op_Seq=1) -> Milling (Op_Seq=2) -> Drilling (Op_Seq=3)
+    Add a new job with operations.
+    Fills ALL required columns to prevent backend crashes.
     """
     if state.df_ops is None:
         raise HTTPException(status_code=400, detail="Data not loaded")
@@ -1011,44 +1038,66 @@ def add_job(request: dict):
         if job_id in state.df_ops['Job_ID'].values:
             raise HTTPException(status_code=400, detail=f"Job {job_id} already exists")
         
-        # Create new operations with proper sequence handling
+        # Create new operations
         new_ops = []
         for i, op in enumerate(operations):
             op_id = f"{job_id}_OP{i+1}"
-            # Convert priority string to numeric
-            priority_str = op.get('priority', 'Medium')
-            priority_map = {'High': 1, 'Medium': 3, 'Low': 5, 1: 1, 3: 3, 5: 5}
-            priority_num = priority_map.get(priority_str, 3)
+            
+            # Safe Priority Handling
+            raw_priority = op.get('priority', 3)
+            try:
+                priority_num = int(raw_priority)
+            except (ValueError, TypeError):
+                priority_map = {'High': 1, 'Medium': 3, 'Low': 5}
+                priority_num = priority_map.get(str(raw_priority), 3)
+            
+            # Safe Numeric Conversions
+            qty = int(op.get('quantity', 1))
+            proc_time = float(op.get('proc_time', 60))
             
             new_op = {
                 'Job_ID': job_id,
                 'Operation_ID': op_id,
-                'Op_Seq': i + 1,  # Critical: Operations execute in this order
-                'Operation_Type': op.get('operation_type', 'Drilling'),
-                'Total_Proc_Min': op.get('proc_time', 60),
-                'Setup_Time': op.get('setup_time', 10),
-                'Transfer_Min': op.get('transfer_time', 5),
-                'Quantity': op.get('quantity', 1),
-                'Release_Day': op.get('release_day', 0),
-                'Due_Day': op.get('due_day', 10),
+                'Op_Seq': i + 1,
+                'Op_Type': op.get('operation_type', 'MILLING'),
+                'Part_Type': 'New_Part',      # <--- Added Default
+                'Mat_Type': 'STEEL',          # <--- Added Default (Prevents Scheduler Crash)
+                'Tool_Group': 'TGA',          # <--- Added Default
+                'Proc_Time_per_Unit': proc_time,
+                'Total_Proc_Min': proc_time,  # Assuming input is total per op
+                'Setup_Time': float(op.get('setup_time', 10)),
+                'Transfer_Min': float(op.get('transfer_time', 5)),
+                'Quantity': qty,
+                'Release_Day': int(op.get('release_day', 0)),
+                'Due_Day': int(op.get('due_day', 10)),
                 'Priority': priority_num,
                 'Vendor_Ref': op.get('vendor_ref', 'V1'),
-                'Outsource_Cost': op.get('outsource_cost', 0),
-                'Outsource_Time_Min': op.get('outsource_time', 0),
-                'Release_Time_Min': op.get('release_day', 0) * 480,
-                'Due_Time_Min': op.get('due_day', 10) * 480,
+                'Outsource_Cost': float(op.get('outsource_cost', 0)),
+                'Outsource_Time_Min': float(op.get('outsource_time', 0)),
+                'Release_Time_Min': int(op.get('release_day', 0)) * 480,
+                'Due_Time_Min': int(op.get('due_day', 10)) * 480,
                 'Completion_Day': 0,
+                'Assignment_Type': 'IN_HOUSE',
+                'Outsource_Flag': 'N'
             }
             new_ops.append(new_op)
         
         # Add to dataframe
         new_df = pd.DataFrame(new_ops)
+        # Align columns with existing dataframe to prevent schema mismatch
+        for col in state.df_ops.columns:
+            if col not in new_df.columns:
+                new_df[col] = None # Fill missing columns with None
+        
+        # Keep only relevant columns
+        new_df = new_df[state.df_ops.columns.intersection(new_df.columns)]
+        
         state.df_ops = pd.concat([state.df_ops, new_df], ignore_index=True)
         
         # Update effective times for new operations
         new_effective = []
         for op in new_ops:
-            op_type = op['Operation_Type']
+            op_type = op['Op_Type']
             eligible_machines = get_eligible_machines(op_type)
             for machine_id in eligible_machines:
                 machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id]
@@ -1081,6 +1130,7 @@ def add_job(request: dict):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error adding job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/job/{job_id}")
