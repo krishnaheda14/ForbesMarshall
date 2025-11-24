@@ -87,9 +87,14 @@ function Comparison() {
   const ALLOWED_HEURISTICS = ['SPT', 'EDD', 'CR', 'PRIORITY'];
 
   // Prepare metrics array with filtering
-  // 1. Safely extract metrics (handle potential nulls in the source object)
+  // 1. Safely extract metrics (handle potential nulls and two shapes returned by compute)
+  //    Some places set store.metrics[HEUR] = { metrics: {...} } while others set store.metrics[HEUR] = {...}
   const safeBackendMetrics = Object.values(metrics || {})
-    .map((m) => m?.metrics)
+    .map((m) => {
+      if (!m) return null;
+      // If the object already has a `metrics` wrapper, use that; otherwise use the object directly
+      return m.metrics ? m.metrics : m;
+    })
     .filter(m => m !== undefined && m !== null);
 
   const rawMetrics = [

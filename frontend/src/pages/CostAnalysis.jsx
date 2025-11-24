@@ -35,6 +35,7 @@ function CostAnalysis() {
   const [heuristic, setHeuristic] = useState('SPT');
   const [analysisData, setAnalysisData] = useState(null);
   const [aiInsights, setAiInsights] = useState('');
+  const [providerAttempts, setProviderAttempts] = useState(null);
   const [loadingProgress, setLoadingProgress] = useState(0);
 
   const hourlyRates = [20, 25, 30, 35, 40, 45, 50, 60, 70, 80];
@@ -84,14 +85,31 @@ function CostAnalysis() {
       enqueueSnackbar('Cost analysis completed!', { variant: 'success' });
 
       // Auto-fetch AI insights
-      setTimeout(async () => {
+          setTimeout(async () => {
         try {
           const aiResponse = await axios.post(`${API_BASE}/api/ai/insights`, {
             prompt: `Analyze the hourly rate vs cost analysis and outsourcing patterns:\n- Identify optimal hourly rate range that balances cost, outsourcing, and tardiness\n- Explain why specific operation types are outsourced (based on savings data)\n- Evaluate if frequent outsourcing of certain jobs indicates capacity gaps or missing capabilities\n- Highlight key inflection points where cost dramatically impacts outcomes\n- Recommend specific hourly rate and whether to invest in expanding in-house capabilities vs continuing outsourcing\n- Suggest improvements to reduce outsourcing dependency if beneficial\n\nData:\n${JSON.stringify(response.data, null, 2)}`,
             context_data: response.data
           });
           
-          setAiInsights(cleanAIInsights(aiResponse.data.insights));
+          // Backend may return either a string or a structured { text, provider_used, attempts }
+          const insightsPayload = aiResponse.data.insights;
+          let insightsText = '';
+          let attempts = null;
+          if (insightsPayload) {
+            if (typeof insightsPayload === 'string') {
+              insightsText = insightsPayload;
+            } else if (insightsPayload.text) {
+              insightsText = insightsPayload.text;
+              attempts = insightsPayload.attempts || null;
+            } else {
+              insightsText = JSON.stringify(insightsPayload);
+              attempts = insightsPayload.attempts || null;
+            }
+          }
+
+          setAiInsights(cleanAIInsights(insightsText));
+          setProviderAttempts(attempts);
         } catch (error) {
           console.error('Failed to fetch AI insights:', error);
         }
@@ -376,6 +394,18 @@ function CostAnalysis() {
               </CardContent>
             </Card>
           )}
+
+            {/* Provider attempts / debug */}
+            {providerAttempts && (
+              <Card sx={{ mb: 3, bgcolor: '#f5f5f5' }}>
+                <CardContent>
+                  <Typography variant="caption" color="text.secondary">AI Provider Attempts (debug)</Typography>
+                  <Box component="pre" sx={{ mt: 1, whiteSpace: 'pre-wrap', fontSize: 12 }}>
+                    {JSON.stringify(providerAttempts, null, 2)}
+                  </Box>
+                </CardContent>
+              </Card>
+            )}
 
           {/* Trade-off Insight */}
           <Card sx={{ mb: 3, bgcolor: '#fff3e0' }}>

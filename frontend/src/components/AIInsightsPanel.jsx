@@ -18,26 +18,46 @@ import {
 } from '@mui/icons-material';
 
 function AIInsightsPanel({ insights, onClose }) {
+  // Normalize various shapes (string | array | object) into a single string
+  const normalizeInput = (input) => {
+    if (input === null || input === undefined) return '';
+    if (typeof input === 'string') return input;
+    if (Array.isArray(input)) return input.map(i => (typeof i === 'string' ? i : JSON.stringify(i))).join('\n\n');
+    if (typeof input === 'object') {
+      // Common possible shapes: { insights: '...', text: '...' }
+      if (typeof input.insights === 'string') return input.insights;
+      if (typeof input.text === 'string') return input.text;
+      // Fallback to pretty JSON
+      try {
+        return JSON.stringify(input, null, 2);
+      } catch (e) {
+        return String(input);
+      }
+    }
+    return String(input);
+  };
+
   // Clean insights to remove markdown artifacts
   const cleanInsights = (text) => {
-    if (!text) return text;
-    
-    let cleaned = text;
-    
+    const safeText = normalizeInput(text);
+    if (!safeText) return '';
+
+    let cleaned = safeText;
+
     // Remove markdown tables (lines with | characters)
     cleaned = cleaned.split('\n')
       .filter(line => !line.trim().startsWith('|') && !line.includes('---|'))
       .join('\n');
-    
+
     // Remove ** bold markers
     cleaned = cleaned.replace(/\*\*/g, '');
-    
+
     // Remove extra blank lines (more than 1 consecutive)
     cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
-    
+
     // Remove leading/trailing whitespace
     cleaned = cleaned.trim();
-    
+
     return cleaned;
   };
 
@@ -107,8 +127,9 @@ function AIInsightsPanel({ insights, onClose }) {
   };
 
   const formatContent = (text) => {
+    const safeText = normalizeInput(text);
     // Highlight important metrics with inline styling
-    return text.split('\n').map((line, idx) => {
+    return safeText.split('\n').map((line, idx) => {
       // Check for bullet points or numbered lists
       if (line.match(/^[\s]*[-*]\s/)) {
         return (

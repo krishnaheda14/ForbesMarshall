@@ -129,12 +129,29 @@ def calculate_metrics(schedule_df, df_ops, heuristic_name='SPT'):
     total_ops = len(schedule_df)
     on_time_pct = ((total_ops - late_ops) / total_ops * 100) if total_ops > 0 else 0
     
-    total_proc = schedule_df['Proc_Time'].sum()
-    num_machines = schedule_df['Machine_ID'].nunique()
-    total_avail = schedule_df['End_Time'].max() * num_machines
-    utilization = (total_proc / total_avail * 100) if total_avail > 0 else 0
+    # FIX: Use actual scheduled processing time (End_Time - Start_Time - Setup - Transfer)
+    # NOT the merged Total_Proc_Min which may be original data before speed_factor adjustment
+    # For in-house ops: Proc_Time from schedule is the effective proc time
+    # For outsourced ops: use the scheduled window duration
+    in_house_ops = schedule_df[schedule_df['Machine_ID'] != 'OUTSOURCE']
+    if len(in_house_ops) > 0:
+        # Use scheduled Proc_Time for in-house (already effective time from scheduler)
+        total_proc = in_house_ops['Proc_Time'].sum()
+        num_machines = in_house_ops['Machine_ID'].nunique()
+        total_avail = schedule_df['End_Time'].max() * num_machines
+        utilization = (total_proc / total_avail * 100) if total_avail > 0 else 0
+    else:
+        utilization = 0
     
-    total_cost = (schedule_df['Proc_Time'].sum() / 60 * 30)
+    # Cost: use Total_Proc_Min if available (original data), fallback to scheduled Proc_Time
+    if 'Total_Proc_Min' in schedule_df.columns:
+        total_cost = (schedule_df['Total_Proc_Min'].sum() / 60 * 30)
+    else:
+        total_cost = (schedule_df['Proc_Time'].sum() / 60 * 30)
+    
+    # Add outsource cost if present
+    if 'Outsource_Cost' in schedule_df.columns:
+        total_cost += schedule_df['Outsource_Cost'].sum()
     
     return {
         'Heuristic': heuristic_name,
@@ -315,7 +332,13 @@ class CNCScheduler:
         self.reset()
         
         # 1. Handle Outsourced Operations First
-        outsourced_ops = self.df_ops[self.df_ops.get('Assignment_Type', 'IN_HOUSE') == 'OUTSOURCE']
+        # Support missing `Assignment_Type` column: treat missing values as 'IN_HOUSE'
+        if 'Assignment_Type' in self.df_ops.columns:
+            assign_col = self.df_ops['Assignment_Type'].fillna('IN_HOUSE')
+        else:
+            assign_col = pd.Series(['IN_HOUSE'] * len(self.df_ops), index=self.df_ops.index)
+
+        outsourced_ops = self.df_ops[assign_col == 'OUTSOURCE']
         for _, op in outsourced_ops.iterrows():
             outsource_time = op.get('Outsource_Time_Min', op.get('Total_Proc_Min', 0))
             release_time = op.get('Release_Time_Min', 0)
@@ -330,9 +353,9 @@ class CNCScheduler:
                 'Machine_ID': 'OUTSOURCE',
                 'Start_Time': release_time,
                 'End_Time': completion,
-                'Setup_Time': 0,
-                'Proc_Time': 0,
-                'Transfer_Time': 0,
+                'Setup_Time': op.get('Setup_Time', 0),
+                'Proc_Time': op.get('Total_Proc_Min', 0),
+                'Transfer_Time': op.get('Transfer_Min', 0),
                 'Due_Time': op.get('Due_Time_Min', 0),
                 'Tardiness': max(0, completion - op.get('Due_Time_Min', 0)),
                 'Priority': int(op.get('Priority', 3)),
@@ -341,7 +364,8 @@ class CNCScheduler:
             })
 
         # 2. Schedule In-House Operations
-        non_outsourced = self.df_ops[self.df_ops.get('Assignment_Type', 'IN_HOUSE') != 'OUTSOURCE']
+        # Non-outsourced operations (respect missing column as IN_HOUSE)
+        non_outsourced = self.df_ops[assign_col != 'OUTSOURCE']
         operations_count = len(non_outsourced)
         scheduled_ops_set = set()
 
@@ -374,9 +398,9 @@ class CNCScheduler:
                     'Machine_ID': 'OUTSOURCE',
                     'Start_Time': release_time,
                     'End_Time': release_time + outsource_time,
-                    'Setup_Time': 0,
-                    'Proc_Time': 0,
-                    'Transfer_Time': 0,
+                    'Setup_Time': next_op.get('Setup_Time', 0),
+                    'Proc_Time': next_op.get('Total_Proc_Min', 0),
+                    'Transfer_Time': next_op.get('Transfer_Min', 0),
                     'Due_Time': next_op.get('Due_Time_Min', 0),
                     'Tardiness': 0,
                     'Priority': int(next_op.get('Priority', 3)),

@@ -15,6 +15,7 @@ import Settings from './pages/Settings';
 import ExcelUpload from './pages/ExcelUpload';
 import CostAnalysis from './pages/CostAnalysis';
 import OutsourcingAnalysis from './pages/OutsourcingAnalysis';
+import ActivityLog from './pages/ActivityLog';
 
 const theme = createTheme({
   palette: {
@@ -119,6 +120,7 @@ function App() {
                   <Route path="/operations" element={<OperationStatus />} />
                   <Route path="/cost-analysis" element={<CostAnalysis />} />
                   <Route path="/outsourcing" element={<OutsourcingAnalysis />} />
+                  <Route path="/activity-log" element={<ActivityLog />} />
                   <Route path="/settings" element={<Settings />} />
                 </Routes>
               </Box>

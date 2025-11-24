@@ -10,6 +10,7 @@ import os
 from dotenv import load_dotenv
 import google.generativeai as genai
 import requests
+import json
 
 # Import scheduling logic from existing file
 import sys
@@ -55,23 +56,37 @@ app.add_middleware(
 # Configure AI - OpenRouter with fallback to Gemini
 try:
     OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+    MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     gemini_model = None
     
     # Configure Gemini regardless (needed for SchemaMapper)
     if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    
-    # Prefer OpenRouter for AI insights, but use Gemini for schema mapping
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            # Create a gemini model handle lazily; if model name is unsupported this will be caught
+            try:
+                gemini_model = genai.GenerativeModel('gemini-flash-latest')
+            except Exception as gm_err:
+                print(f"[main] Gemini model init failed: {type(gm_err).__name__}: {str(gm_err)}")
+                gemini_model = None
+        except Exception as gerr:
+            print(f"[main] Gemini configuration failed: {type(gerr).__name__}: {str(gerr)}")
+            gemini_model = None
+
+    # Prefer OpenRouter -> Mistral -> Gemini for insights. Gemini still used for schema mapping if available.
     if OPENROUTER_API_KEY:
         AI_ENABLED = True
         AI_PROVIDER = 'openrouter'
-        print(f"AI enabled with OpenRouter (insights) and Gemini (schema mapping: {'Yes' if gemini_model else 'No'})")
+        print(f"AI enabled: OpenRouter primary (Mistral/Gemini fallback possible). Gemini schema mapping: {'Yes' if gemini_model else 'No'})")
+    elif MISTRAL_API_KEY:
+        AI_ENABLED = True
+        AI_PROVIDER = 'mistral'
+        print(f"AI enabled: Mistral primary (Gemini schema mapping: {'Yes' if gemini_model else 'No'})")
     elif GEMINI_API_KEY:
         AI_ENABLED = True
         AI_PROVIDER = 'gemini'
-        print("AI enabled with Gemini (both insights and schema mapping)")
+        print("AI enabled: Gemini primary for insights and schema mapping")
     else:
         AI_ENABLED = False
         AI_PROVIDER = None
@@ -144,6 +159,7 @@ def load_all_data(sample_size=None):
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     data_dir = os.path.join(base_dir, 'data')
     
+    attempts = []
     try:
         # Use jobs_dataset.csv for normal operations
         df_ops = pd.read_csv(os.path.join(data_dir, 'jobs_dataset.csv'))
@@ -165,7 +181,38 @@ def load_all_data(sample_size=None):
         unique_jobs = df_ops['Job_ID'].unique()[:sample_size]
         df_ops = df_ops[df_ops['Job_ID'].isin(unique_jobs)].copy()
 
-    df_ops['Total_Proc_Min'] = df_ops['Proc_Time_per_Unit'] * df_ops['Quantity']
+    # Total processing time in minutes (per unit * quantity). If Proc_Time is in hours, user must convert upstream.
+    if 'Proc_Time_per_Unit' in df_ops.columns:
+        proc_per_unit = pd.to_numeric(df_ops['Proc_Time_per_Unit'], errors='coerce')
+        qty = pd.to_numeric(df_ops['Quantity'], errors='coerce')
+        df_ops['Total_Proc_Min'] = proc_per_unit * qty
+        # Heuristic: if Proc_Time_per_Unit looks like hours (small decimals <=24) convert to minutes
+        try:
+            vals = proc_per_unit.dropna()
+            if len(vals) > 0 and vals.max() <= 24 and vals.mean() < 10:
+                # Likely hours — convert Total_Proc_Min from hours to minutes
+                df_ops['Total_Proc_Min'] = df_ops['Total_Proc_Min'] * 60
+                print('[data-load] Converted Proc_Time_per_Unit from hours->minutes (multiplied by 60)')
+        except Exception:
+            pass
+        # Ensure numeric and no NaNs for Total_Proc_Min when Proc_Time_per_Unit path used
+        df_ops['Total_Proc_Min'] = pd.to_numeric(df_ops['Total_Proc_Min'], errors='coerce').fillna(0)
+    elif 'Proc_Time' in df_ops.columns:
+        # Older datasets may have a Proc_Time column already representing per-operation time
+        df_ops['Total_Proc_Min'] = pd.to_numeric(df_ops['Proc_Time'], errors='coerce') * pd.to_numeric(df_ops['Quantity'], errors='coerce')
+        df_ops['Total_Proc_Min'] = pd.to_numeric(df_ops['Total_Proc_Min'], errors='coerce').fillna(0)
+    else:
+        # No processing time columns found — default to zero to avoid crashes downstream
+        df_ops['Total_Proc_Min'] = 0
+
+    # Release/Due time conversion deferred until after vendor merge so a single
+    # consistent minutes-per-day conversion (workday-based) is applied.
+    # (See later where MINUTES_PER_DAY = 8 * 60 is used.)
+
+    # DO NOT pre-assign Assignment_Type - let scheduler heuristics determine it
+    # Assignment_Type will be set based on make_or_buy_decision during scheduling
+    if 'Assignment_Type' not in df_ops.columns:
+        df_ops['Assignment_Type'] = None  # Will be determined by scheduler
 
     # Normalize machines df
     if 'Speed_Factor' not in df_machines.columns and 'SpeedFactor' in df_machines.columns:
@@ -231,26 +278,64 @@ def load_all_data(sample_size=None):
     else:
         df_machines['Maintenance_Window'] = None
 
-    # Make-or-buy decisions
-    decisions = []
-    for idx, op in df_ops.iterrows():
-        result = make_or_buy_decision(op, df_effective, state.cost_threshold)
-        decisions.append({'Operation_ID': op['Operation_ID'], 'Decision': result[0] if result else 'IN_HOUSE'})
-
-    df_decisions = pd.DataFrame(decisions)
-    df_ops = df_ops.merge(df_decisions, on='Operation_ID', how='left')
-    df_ops['Assignment_Type'] = df_ops['Decision'].fillna('IN_HOUSE')
-    df_ops.drop(columns=['Decision'], inplace=True)
+    # DO NOT call make_or_buy_decision here - it will be called by the scheduler
+    # The scheduler will determine Assignment_Type based on the selected heuristic
 
     return df_ops, df_machines, df_effective, df_penalties, df_vendors
 
 def get_ai_insights(prompt: str, context_data: Optional[Dict] = None):
-    """Generate AI insights using OpenRouter or Gemini"""
+    """Generate AI insights using OpenRouter, Mistral, or Gemini with safe fallbacks.
+
+    Strategy:
+    - Prefer OpenRouter (Claude) when available
+    - If OpenRouter fails due to token limits, retry with a shortened context
+    - If OpenRouter unavailable or fails, try Mistral (HTTP) if configured
+    - Finally fallback to Gemini (google.generativeai) if configured
+    """
     if not AI_ENABLED:
-        return "AI insights are disabled. Please add OPENROUTER_API_KEY or GEMINI_API_KEY to your .env file."
-    
-    try:
-        full_prompt = f"""
+        return {'text': "AI insights are disabled. Please add OPENROUTER_API_KEY, MISTRAL_API_KEY, or GEMINI_API_KEY to your environment.", 'provider_used': None, 'attempts': []}
+
+    # Track provider attempts for debug / frontend visibility
+    attempts = []
+
+    def summarize_context(ctx):
+        """Create a compact summary of context_data to avoid token limits."""
+        try:
+            if ctx is None:
+                return ''
+            if isinstance(ctx, dict):
+                lines = []
+                for k, v in list(ctx.items())[:4]:
+                    m = v.get('metrics') if isinstance(v, dict) and 'metrics' in v else v
+                    if isinstance(m, dict):
+                        parts = []
+                        for f in ('Makespan_Days', 'Total_Tardiness_Days', 'Total_Cost_$', 'On_Time_%', 'Machine_Utilization_%'):
+                            if f in m:
+                                parts.append(f"{f}={m.get(f)}")
+                        lines.append(f"{k}: " + (", ".join(parts) if parts else "summary_present"))
+                    else:
+                        lines.append(f"{k}: {str(m)[:200]}")
+                return "\n".join(lines)
+            if isinstance(ctx, list):
+                lines = []
+                for i, item in enumerate(ctx[:4], 1):
+                    h = item.get('Heuristic') if isinstance(item, dict) else f'item{i}'
+                    m = item.get('metrics') if isinstance(item, dict) and 'metrics' in item else item
+                    if isinstance(m, dict):
+                        parts = []
+                        for f in ('Makespan_Days', 'Total_Tardiness_Days', 'Total_Cost_$', 'On_Time_%'):
+                            if f in m:
+                                parts.append(f"{f}={m.get(f)}")
+                        lines.append(f"{h}: " + ", ".join(parts))
+                    else:
+                        lines.append(f"{h}: {str(m)[:200]}")
+                return "\n".join(lines)
+            return str(ctx)[:1000]
+        except Exception:
+            return ''
+
+    # Compose prompts
+    base_prompt = f"""
 You are an expert in manufacturing scheduling, operations research, and production planning.
 
 **CONTEXT:**
@@ -262,67 +347,156 @@ This is a CNC job scheduling application with 4 heuristics:
 
 {prompt}
 """
-        
-        if context_data:
-            full_prompt += f"\n\n**DATA CONTEXT:**\n{context_data}\n"
-        
-        full_prompt += """\n\n**OUTPUT REQUIREMENTS:**
+
+    full_prompt = base_prompt
+    short_prompt = base_prompt
+    if context_data:
+        full_prompt += f"\n\n**DATA CONTEXT:**\n{context_data}\n"
+        short_summary = summarize_context(context_data)
+        short_prompt += f"\n\n**DATA SUMMARY:**\n{short_summary}\n"
+
+    full_prompt += """\n\n**OUTPUT REQUIREMENTS:**
 Provide 3-5 direct, actionable insights as bullet points.
-- Start immediately with insights (no preamble like "Based on the data" or "Here are the insights")
+- Start immediately with insights (no preamble like \"Based on the data\" or \"Here are the insights\")
 - Use proper spacing between bullets for readability
 - Use clear punctuation and complete sentences
-- Focus on specific metrics and values (e.g., "Total Cost: $X" not "cost parameter")
+- Focus on specific metrics and values (e.g., \"Total Cost: $X\" not \"cost parameter\")
 - Be concise and professional
 - Do not include any meta-commentary about the format"""
-        
-        # Use OpenRouter if available (better models)
+
+    # Helper: call Mistral (best-effort)
+    def call_mistral(prompt_text: str):
+        if not MISTRAL_API_KEY:
+            raise RuntimeError("No MISTRAL_API_KEY configured")
+        # Mistral expects a `messages` array similar to other chat endpoints
+        payload = {
+            "model": "mistral-large-latest",
+            "messages": [{"role": "user", "content": prompt_text}],
+            "max_tokens": 1000,
+            "temperature": 0.7
+        }
+        headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
+        resp = requests.post("https://api.mistral.ai/v1/chat/completions", headers=headers, json=payload, timeout=30)
+        if resp.status_code != 200:
+            # Surface the body for debugging
+            raise RuntimeError(f"Mistral API error: {resp.status_code} - {resp.text}")
+
+        data = resp.json()
+        # Preferred shape: choices[0].message.content
+        try:
+            if isinstance(data, dict) and 'choices' in data and isinstance(data['choices'], list) and len(data['choices']) > 0:
+                first = data['choices'][0]
+                # Some responses put the text under message.content
+                if isinstance(first, dict):
+                    msg = first.get('message') or first.get('message')
+                    if isinstance(msg, dict) and 'content' in msg:
+                        return msg['content']
+                    # fallback to choice text fields
+                    for k in ('text', 'content', 'output'):
+                        if k in first and isinstance(first[k], str):
+                            return first[k]
+        except Exception:
+            pass
+
+        # Legacy/fallback parsing: accept other shapes
+        if isinstance(data, dict):
+            if 'output' in data and isinstance(data['output'], str):
+                return data['output']
+            if 'results' in data and isinstance(data['results'], list) and len(data['results']) > 0:
+                first = data['results'][0]
+                if isinstance(first, dict):
+                    for k in ('content', 'text', 'output'):
+                        if k in first:
+                            return first[k]
+                if isinstance(first, str):
+                    return first
+            if 'text' in data and isinstance(data['text'], str):
+                return data['text']
+        return json.dumps(data)[:4000]
+
+    try:
+        # 1) OpenRouter primary
         if AI_PROVIDER == 'openrouter':
-            response = requests.post(
-                url="https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "anthropic/claude-3.5-sonnet",  # Claude 3.5 Sonnet (paid but working)
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": full_prompt
-                        }
-                    ],
-                    "max_tokens": 1000,
-                    "temperature": 0.7
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content']
-            else:
-                # Fallback to Gemini if OpenRouter fails
+                resp = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"},
+                    json={"model": "anthropic/claude-3.5-sonnet", "messages": [{"role": "user", "content": full_prompt}], "max_tokens": 1000, "temperature": 0.7},
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    text = resp.json()['choices'][0]['message']['content']
+                    attempts.append({'provider': 'openrouter', 'status': 'success'})
+                    return {'text': text, 'provider_used': 'openrouter', 'attempts': attempts}
+                # Token limit exceeded -> retry with short prompt
+                if resp.status_code == 402 and context_data:
+                    try:
+                        print('[AI Insights] OpenRouter token limit exceeded — retrying with shortened context')
+                        retry = requests.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}", "Content-Type": "application/json"},
+                            json={"model": "anthropic/claude-3.5-sonnet", "messages": [{"role": "user", "content": short_prompt}], "max_tokens": 1000, "temperature": 0.7},
+                            timeout=30,
+                        )
+                        if retry.status_code == 200:
+                            text = retry.json()['choices'][0]['message']['content']
+                            attempts.append({'provider': 'openrouter', 'status': 'retry_success', 'note': 'short_prompt'})
+                            return {'text': text, 'provider_used': 'openrouter', 'attempts': attempts}
+                    except Exception:
+                        pass
+                # Otherwise try Mistral then Gemini
+                last_err = f"OpenRouter API error: {resp.status_code} - {resp.text[:200]}"
+                attempts.append({'provider': 'openrouter', 'status': 'error', 'code': resp.status_code, 'message': resp.text[:200]})
+                if MISTRAL_API_KEY:
+                    try:
+                        mtxt = call_mistral(short_prompt if context_data else full_prompt)
+                        attempts.append({'provider': 'mistral', 'status': 'success'})
+                        return {'text': mtxt, 'provider_used': 'mistral', 'attempts': attempts}
+                    except Exception as me:
+                        attempts.append({'provider': 'mistral', 'status': 'error', 'message': str(me)[:200]})
+                        last_err += f"; Mistral failed: {str(me)[:200]}"
                 if GEMINI_API_KEY and gemini_model:
                     try:
-                        print("[AI Insights] OpenRouter failed, trying Gemini fallback...")
-                        response = gemini_model.generate_content(full_prompt)
-                        return response.text
-                    except Exception as gemini_error:
-                        return f"Both OpenRouter and Gemini failed. OpenRouter: {response.status_code} - {response.text[:100]}. Gemini: {str(gemini_error)[:100]}"
-                else:
-                    return f"OpenRouter API error: {response.status_code} - {response.text}"
-        
-        # Use Gemini as primary
-        else:
+                        gm = gemini_model.generate_content(short_prompt if context_data else full_prompt)
+                        attempts.append({'provider': 'gemini', 'status': 'success'})
+                        return {'text': gm.text, 'provider_used': 'gemini', 'attempts': attempts}
+                    except Exception as ge:
+                        attempts.append({'provider': 'gemini', 'status': 'error', 'message': str(ge)[:200]})
+                        last_err += f"; Gemini failed: {str(ge)[:200]}"
+                return {'text': last_err, 'provider_used': None, 'attempts': attempts}
+
+        # 2) Mistral primary
+        if AI_PROVIDER == 'mistral':
+            try:
+                mtxt = call_mistral(full_prompt)
+                attempts.append({'provider': 'mistral', 'status': 'success'})
+                return {'text': mtxt, 'provider_used': 'mistral', 'attempts': attempts}
+            except Exception as me:
+                attempts.append({'provider': 'mistral', 'status': 'error', 'message': str(me)[:200]})
+                if GEMINI_API_KEY and gemini_model:
+                    try:
+                        gm = gemini_model.generate_content(short_prompt if context_data else full_prompt)
+                        attempts.append({'provider': 'gemini', 'status': 'success'})
+                        return {'text': gm.text, 'provider_used': 'gemini', 'attempts': attempts}
+                    except Exception as ge:
+                        attempts.append({'provider': 'gemini', 'status': 'error', 'message': str(ge)[:200]})
+                        return {'text': f"Mistral failed: {str(me)[:200]}; Gemini failed: {str(ge)[:200]}", 'provider_used': None, 'attempts': attempts}
+                return {'text': f"Mistral failed: {str(me)}", 'provider_used': None, 'attempts': attempts}
+
+        # 3) Gemini primary
+        if AI_PROVIDER == 'gemini':
             if not gemini_model:
-                return "AI insights unavailable: No valid API keys configured"
-            response = gemini_model.generate_content(full_prompt)
-            return response.text
-    
+                attempts.append({'provider': 'gemini', 'status': 'unconfigured'})
+                return {'text': "AI insights unavailable: No valid API keys configured", 'provider_used': None, 'attempts': attempts}
+            response = gemini_model.generate_content(short_prompt if context_data else full_prompt)
+            attempts.append({'provider': 'gemini', 'status': 'success'})
+            return {'text': response.text, 'provider_used': 'gemini', 'attempts': attempts}
+
     except Exception as e:
-        error_msg = str(e)
-        if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
-            return "⚠️ Gemini API key is invalid or expired. Please update GEMINI_API_KEY in .env file or use OpenRouter instead."
-        return f"Error generating AI insights: {error_msg}"
+        em = str(e)
+        attempts.append({'provider': 'internal', 'status': 'error', 'message': em[:300]})
+        if "API_KEY_INVALID" in em or "API key not valid" in em:
+            return {'text': "⚠️ API key invalid or expired. Please update your AI keys in the environment.", 'provider_used': None, 'attempts': attempts}
+        return {'text': f"Error generating AI insights: {em}", 'provider_used': None, 'attempts': attempts}
 
 # API Endpoints
 
@@ -384,6 +558,48 @@ def get_data_info():
         "cost_threshold": state.cost_threshold
     }
 
+@app.get("/api/debug/schedule-sample")
+def get_schedule_sample():
+    """Debug endpoint: Get sample of current schedule to inspect tardiness"""
+    if state.current_heuristic is None or state.current_heuristic not in state.schedules:
+        raise HTTPException(status_code=400, detail="No schedule available. Compute a heuristic first.")
+    
+    schedule = state.schedules[state.current_heuristic]
+    
+    # Get tardiness statistics
+    total_tardiness_min = schedule['Tardiness'].sum()
+    max_tardiness_min = schedule['Tardiness'].max()
+    avg_tardiness_min = schedule['Tardiness'].mean()
+    late_ops = (schedule['Tardiness'] > 0).sum()
+    
+    # Get sample of late operations
+    late_samples = schedule[schedule['Tardiness'] > 0].nlargest(5, 'Tardiness')[
+        ['Operation_ID', 'Job_ID', 'Machine_ID', 'Start_Time', 'End_Time', 'Due_Time', 'Tardiness']
+    ].to_dict('records')
+    
+    # Get sample of on-time operations
+    ontime_samples = schedule[schedule['Tardiness'] == 0].head(5)[
+        ['Operation_ID', 'Job_ID', 'Machine_ID', 'Start_Time', 'End_Time', 'Due_Time', 'Tardiness']
+    ].to_dict('records')
+    
+    return {
+        "heuristic": state.current_heuristic,
+        "total_operations": len(schedule),
+        "late_operations": int(late_ops),
+        "tardiness_stats_minutes": {
+            "total": float(total_tardiness_min),
+            "max": float(max_tardiness_min),
+            "average": float(avg_tardiness_min)
+        },
+        "tardiness_stats_days_8hr": {
+            "total": float(total_tardiness_min / 480),
+            "max": float(max_tardiness_min / 480),
+            "average": float(avg_tardiness_min / 480)
+        },
+        "late_operation_samples": late_samples,
+        "ontime_operation_samples": ontime_samples
+    }
+
 @app.get("/api/data/machines")
 def get_machine_data():
     """Get machine data including maintenance windows"""
@@ -436,26 +652,83 @@ def compute_heuristic(request: ComputeHeuristicRequest):
     # ... rest of function
     
     try:
+        # Make-or-buy decisions are evaluated at compute time (not during data load)
+        # so the scheduler receives operation Assignment_Type values derived
+        # from the current state, vendor costs and thresholds.
+        df_ops_for_sched = state.df_ops.copy()
+        try:
+            for idx, op in df_ops_for_sched.iterrows():
+                try:
+                    decision = make_or_buy_decision(op, state.df_effective, cost_threshold=state.cost_threshold)
+                except TypeError:
+                    # Support alternate signature: make_or_buy_decision(operation, df_effective, threshold)
+                    decision = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
+
+                # If decision indicates outsourcing, set Assignment_Type for scheduler input
+                if decision is not None:
+                    # decision can be ('OUTSOURCE', cost) or ('OUTSOURCE', cost, reason)
+                    if isinstance(decision, (list, tuple)) and len(decision) > 0 and str(decision[0]).upper() == 'OUTSOURCE':
+                        df_ops_for_sched.at[idx, 'Assignment_Type'] = 'OUTSOURCE'
+        except Exception:
+            # Fail-safe: leave state.df_ops unchanged if any error occurs while evaluating decisions
+            df_ops_for_sched = state.df_ops.copy()
+
         scheduler = CNCScheduler(
-            state.df_ops.copy(),
+            df_ops_for_sched,
             state.df_machines.copy(),
             state.df_effective.copy(),
             state.df_penalties.copy()
         )
-        
+
         schedule = scheduler.run_scheduling(heuristic=heuristic, verbose=False)
+
+        # Defensive check: scheduler may return False or None on error
+        if schedule is False or schedule is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Scheduling failed: Scheduler returned no valid schedule. Check that operations can be assigned to available machines."
+            )
+
+        if not isinstance(schedule, pd.DataFrame) or schedule.empty:
+            raise HTTPException(
+                status_code=500,
+                detail="Scheduling failed: Scheduler returned invalid or empty schedule."
+            )
 
         # Merge in Priority, Assignment_Type and supporting fields for CR debugging
         try:
-            schedule_df = schedule.merge(
+            # Rename scheduler's Proc_Time to Scheduled_Proc_Time to avoid confusion
+            schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+            
+            # Merge scheduler output with supporting fields from the original ops
+            # but do NOT merge `Assignment_Type` from loaded data — keep the
+            # scheduler's Assignment_Type authoritative.
+            schedule_df = schedule_df.merge(
                 state.df_ops[[
-                    'Operation_ID', 'Priority', 'Assignment_Type',
-                    'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min'
+                    'Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min'
                 ]],
                 on='Operation_ID', how='left'
             )
             schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
             schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            
+            # Add Proc_Time field: use Total_Proc_Min from original data (shows actual processing time for all ops)
+            schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+            # Expose a frontend-friendly release field (minutes) mapped from Release_Time_Min
+            try:
+                if 'Release_Time_Min' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce')
+                elif 'Release_Time' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time'], errors='coerce')
+                elif 'Release' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release'], errors='coerce')
+                else:
+                    schedule_df['Release'] = None
+                schedule_df['Release_Time'] = schedule_df['Release']
+            except Exception:
+                schedule_df['Release'] = schedule_df.get('Release_Time_Min', schedule_df.get('Release_Time', None))
+                schedule_df['Release_Time'] = schedule_df['Release']
+            
             try:
                 schedule_df['Critical_Ratio'] = schedule_df.apply(
                     lambda r: (((r.get('Due_Time_Min') or 0) - (r.get('Release_Time_Min') or 0)) / (r.get('Total_Proc_Min') or 1)),
@@ -498,22 +771,78 @@ def compute_all_heuristics():
     
     try:
         for heur in heuristics:
-            # ... (logic remains the same)
+            # Evaluate make-or-buy at compute time so each heuristic run uses
+            # the same decision logic (but does not change scheduler internals)
+            df_ops_for_sched = state.df_ops.copy()
+            try:
+                for idx, op in df_ops_for_sched.iterrows():
+                    try:
+                        decision = make_or_buy_decision(op, state.df_effective, cost_threshold=state.cost_threshold)
+                    except TypeError:
+                        decision = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
+                    if isinstance(decision, (list, tuple)) and len(decision) > 0 and str(decision[0]).upper() == 'OUTSOURCE':
+                        df_ops_for_sched.at[idx, 'Assignment_Type'] = 'OUTSOURCE'
+            except Exception:
+                df_ops_for_sched = state.df_ops.copy()
+
             scheduler = CNCScheduler(
-                state.df_ops.copy(),
+                df_ops_for_sched,
                 state.df_machines.copy(),
                 state.df_effective.copy(),
                 state.df_penalties.copy()
             )
-            
+
             schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
+
+            # Defensive check for invalid scheduler returns
+            if schedule is False or schedule is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Scheduling failed for heuristic {heur}: scheduler returned no valid schedule"
+                )
+            if not isinstance(schedule, pd.DataFrame) or schedule.empty:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Scheduling failed for heuristic {heur}: scheduler returned invalid or empty schedule"
+                )
             try:
-                schedule_df = schedule.merge(
-                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                # Rename scheduler's Proc_Time to avoid overwriting original data
+                schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+                
+                # Merge in Priority, Assignment_Type, Proc and Release fields so frontend can display them
+                # Keep scheduler's Assignment_Type; merge other supporting fields
+                schedule_df = schedule_df.merge(
+                    state.df_ops[[
+                        'Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min'
+                    ]],
                     on='Operation_ID', how='left'
                 )
                 schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+                
+                # Add Proc_Time field: use Total_Proc_Min from original data
+                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+
+                # Expose `Release` and `Release_Time` using Release_Time_Min for frontend convenience
+                try:
+                    if 'Release_Time_Min' in schedule_df.columns:
+                        schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce')
+                    elif 'Release_Time' in schedule_df.columns:
+                        schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time'], errors='coerce')
+                    else:
+                        schedule_df['Release'] = None
+                    schedule_df['Release_Time'] = schedule_df['Release']
+                except Exception:
+                    schedule_df['Release'] = schedule_df.get('Release_Time_Min', schedule_df.get('Release_Time', None))
+                    schedule_df['Release_Time'] = schedule_df['Release']
+                
+                try:
+                    schedule_df['Critical_Ratio'] = schedule_df.apply(
+                        lambda r: (((r.get('Due_Time_Min') or 0) - (r.get('Release_Time_Min') or 0)) / (r.get('Total_Proc_Min') or 1)),
+                        axis=1
+                    )
+                except Exception:
+                    schedule_df['Critical_Ratio'] = None
             except Exception:
                 schedule_df = schedule.copy()
 
@@ -569,14 +898,28 @@ def run_cpsat(request: CPSATRequest):
         )
 
         schedule_df = pd.DataFrame(result.schedule)
-        # Merge Priority & Assignment_Type into CPSAT schedule if available
+        # Merge Priority, Assignment_Type and release/proc fields into CPSAT schedule if available
         try:
             schedule_df = schedule_df.merge(
-                state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                state.df_ops[[
+                    'Operation_ID', 'Priority', 'Assignment_Type', 'Release_Time_Min', 'Due_Time_Min', 'Total_Proc_Min'
+                ]],
                 on='Operation_ID', how='left'
             )
             schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
             schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            # Ensure Proc_Time is visible (from Total_Proc_Min) and expose Release fields
+            if 'Total_Proc_Min' in schedule_df.columns:
+                schedule_df['Proc_Time'] = pd.to_numeric(schedule_df['Total_Proc_Min'], errors='coerce').fillna(0)
+            try:
+                if 'Release_Time_Min' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce')
+                else:
+                    schedule_df['Release'] = None
+                schedule_df['Release_Time'] = schedule_df['Release']
+            except Exception:
+                schedule_df['Release'] = schedule_df.get('Release_Time_Min', None)
+                schedule_df['Release_Time'] = schedule_df['Release']
         except Exception:
             pass
 
@@ -632,6 +975,42 @@ def apply_heuristic(request: ApplyHeuristicRequest):
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
             except Exception:
                 pass
+        # Ensure supporting fields (Proc_Time, Release, Transfer, Setup) are present for frontend
+        try:
+            sup_cols = [c for c in ['Total_Proc_Min', 'Release_Time_Min', 'Release_Time', 'Due_Time_Min', 'Transfer_Min', 'Setup_Time', 'Outsource_Cost'] if c in state.df_ops.columns]
+            if sup_cols:
+                schedule_df = schedule_df.merge(state.df_ops[['Operation_ID'] + sup_cols], on='Operation_ID', how='left')
+
+            # Proc_Time: prefer Total_Proc_Min, fallback to Scheduled_Proc_Time
+            if 'Total_Proc_Min' in schedule_df.columns:
+                schedule_df['Proc_Time'] = pd.to_numeric(schedule_df['Total_Proc_Min'], errors='coerce').fillna(0)
+            else:
+                schedule_df['Proc_Time'] = pd.to_numeric(schedule_df.get('Scheduled_Proc_Time', 0), errors='coerce').fillna(0)
+
+            # Transfer_Time and Setup_Time
+            if 'Transfer_Min' in schedule_df.columns:
+                schedule_df['Transfer_Time'] = schedule_df.get('Transfer_Time', schedule_df['Transfer_Min'])
+            else:
+                schedule_df['Transfer_Time'] = schedule_df.get('Transfer_Time', 0)
+
+            schedule_df['Setup_Time'] = schedule_df.get('Setup_Time', 0).fillna(0) if 'Setup_Time' in schedule_df.columns else 0
+
+            # Expose Release fields consistently
+            try:
+                if 'Release_Time_Min' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce')
+                elif 'Release_Time' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time'], errors='coerce')
+                elif 'Release' in schedule_df.columns:
+                    schedule_df['Release'] = pd.to_numeric(schedule_df['Release'], errors='coerce')
+                else:
+                    schedule_df['Release'] = None
+                schedule_df['Release_Time'] = schedule_df['Release']
+            except Exception:
+                schedule_df['Release'] = schedule_df.get('Release_Time_Min', schedule_df.get('Release_Time', None))
+                schedule_df['Release_Time'] = schedule_df['Release']
+        except Exception:
+            pass
         state.current_heuristic = heuristic
         
         state.activity_log.append({
@@ -671,6 +1050,21 @@ def get_current_schedule():
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
             except Exception:
                 pass
+
+        # Add Release_Day for frontend OperationStatus display (minutes -> 8-hour workdays)
+        try:
+            MINUTES_PER_DAY = 8 * 60
+            if 'Release_Time_Min' in schedule_df.columns:
+                schedule_df['Release_Day'] = (pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce') / MINUTES_PER_DAY).round(3)
+            elif 'Release_Time' in schedule_df.columns:
+                schedule_df['Release_Day'] = (pd.to_numeric(schedule_df['Release_Time'], errors='coerce') / MINUTES_PER_DAY).round(3)
+            elif 'Release' in schedule_df.columns:
+                schedule_df['Release_Day'] = (pd.to_numeric(schedule_df['Release'], errors='coerce') / MINUTES_PER_DAY).round(3)
+            else:
+                # If no release info, keep None to avoid adding incorrect defaults
+                schedule_df['Release_Day'] = None
+        except Exception:
+            schedule_df['Release_Day'] = schedule_df.get('Release_Time_Min', None)
 
         return {
             "heuristic": state.current_heuristic,
@@ -849,8 +1243,11 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
         
         new_outsourced = len(state.df_ops[state.df_ops['Assignment_Type'] == 'OUTSOURCE'])
         
-        # Recompute ALL heuristics
+        # Recompute ALL heuristics that we currently have cached.
+        # If no schedules cached but a heuristic is currently applied, ensure we at least recompute that one
         heuristics_to_recompute = list(state.schedules.keys())
+        if not heuristics_to_recompute and state.current_heuristic:
+            heuristics_to_recompute = [state.current_heuristic]
         recomputed_metrics = {}
         
         for heur in heuristics_to_recompute:
@@ -863,12 +1260,42 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
 
             schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
             try:
+                # Merge supporting fields so front-end has access to proc/release/transfer/setup
+                merge_base = ['Operation_ID', 'Priority', 'Assignment_Type']
+                support = [c for c in ['Total_Proc_Min', 'Release_Time_Min', 'Release_Time', 'Due_Time_Min', 'Transfer_Min', 'Setup_Time', 'Outsource_Cost'] if c in state.df_ops.columns]
+                merge_cols = merge_base + support
                 schedule_df = schedule.merge(
-                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
+                    state.df_ops[merge_cols],
                     on='Operation_ID', how='left'
                 )
                 schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+                # Expose Proc_Time from Total_Proc_Min where available
+                if 'Total_Proc_Min' in schedule_df.columns:
+                    schedule_df['Proc_Time'] = pd.to_numeric(schedule_df['Total_Proc_Min'], errors='coerce').fillna(0)
+                else:
+                    schedule_df['Proc_Time'] = pd.to_numeric(schedule_df.get('Scheduled_Proc_Time', 0), errors='coerce').fillna(0)
+
+                # Transfer and Setup
+                if 'Transfer_Min' in schedule_df.columns:
+                    schedule_df['Transfer_Time'] = schedule_df.get('Transfer_Time', schedule_df['Transfer_Min'])
+                else:
+                    schedule_df['Transfer_Time'] = schedule_df.get('Transfer_Time', 0)
+                schedule_df['Setup_Time'] = schedule_df.get('Setup_Time', 0).fillna(0) if 'Setup_Time' in schedule_df.columns else 0
+
+                # Release mapping
+                try:
+                    if 'Release_Time_Min' in schedule_df.columns:
+                        schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce')
+                    elif 'Release_Time' in schedule_df.columns:
+                        schedule_df['Release'] = pd.to_numeric(schedule_df['Release_Time'], errors='coerce')
+                    else:
+                        schedule_df['Release'] = None
+                    schedule_df['Release_Time'] = schedule_df['Release']
+                except Exception:
+                    schedule_df['Release'] = schedule_df.get('Release_Time_Min', schedule_df.get('Release_Time', None))
+                    schedule_df['Release_Time'] = schedule_df['Release']
             except Exception:
                 schedule_df = schedule.copy()
 
@@ -883,14 +1310,25 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
             'action': 'Outsourcing Policy Updated',
             'details': f"Threshold: {old_threshold} -> {request.cost_threshold}, Outsourced: {new_outsourced}"
         })
-        
+        # Also return the updated schedule for the currently applied heuristic (if any)
+        updated_schedule = None
+        updated_metrics_for_current = None
+        try:
+            if state.current_heuristic and state.current_heuristic in state.schedules:
+                updated_schedule = state.schedules[state.current_heuristic].to_dict('records')
+                updated_metrics_for_current = state.metrics.get(state.current_heuristic)
+        except Exception:
+            updated_schedule = None
+
         return {
             "status": "success",
             "message": f"Outsourcing policy updated. {len(heuristics_to_recompute)} heuristic(s) recomputed.",
             "new_outsourced_count": new_outsourced,
             "total_operations": len(state.df_ops),
             "heuristics_recomputed": heuristics_to_recompute,
-            "metrics": recomputed_metrics
+            "metrics": recomputed_metrics,
+            "updated_schedule": updated_schedule,
+            "updated_schedule_metrics": updated_metrics_for_current
         }
     except Exception as e:
         print(f"Error in update_outsourcing_policy: {str(e)}")
@@ -959,11 +1397,20 @@ def analyze_hourly_cost(request: dict):
                     savings = op_inhouse_cost - op_outsource_cost
                     savings_pct = (savings / op_inhouse_cost) * 100 if op_inhouse_cost > 0 else 0
                     
+                    # Normalize operation type field (handle varying column names)
+                    op_type = None
+                    for k in ('Operation_Type', 'operation_type', 'Op_Type', 'OpType'):
+                        if k in op and pd.notna(op.get(k)):
+                            op_type = op.get(k)
+                            break
+                    if op_type is None:
+                        op_type = op.get('Mat_Type') or 'UNKNOWN'
+
                     outsourcing_details.append({
-                        'job_id': op['Job_ID'],
-                        'operation_id': op['Operation_ID'],
-                        'operation_type': op['Operation_Type'],
-                        'proc_time_min': op['Total_Proc_Min'],
+                        'job_id': op.get('Job_ID'),
+                        'operation_id': op.get('Operation_ID'),
+                        'operation_type': op_type,
+                        'proc_time_min': op.get('Total_Proc_Min', op.get('Proc_Time', 0)),
                         'inhouse_cost': round(op_inhouse_cost, 2),
                         'outsource_cost': round(op_outsource_cost, 2),
                         'savings': round(savings, 2),
@@ -1297,7 +1744,9 @@ excel_ingestor = ExcelIngestor()
 schema_mapper = SchemaMapper(
     gemini_model=gemini_model if AI_ENABLED else None,
     openrouter_api_key=OPENROUTER_API_KEY if AI_PROVIDER == 'openrouter' else None,
-    use_openrouter=(AI_PROVIDER == 'openrouter')
+    use_openrouter=(AI_PROVIDER == 'openrouter'),
+    mistral_api_key=os.environ.get('MISTRAL_API_KEY'),
+    mistral_model=os.environ.get('MISTRAL_MODEL', 'mistral-small')
 )
 
 @app.post("/api/excel/upload")
@@ -1328,11 +1777,14 @@ async def parse_excel_sheet(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+from fastapi import Form
+
+
 @app.post("/api/excel/auto-map")
 async def auto_map_columns(
     file: UploadFile = File(...),
-    sheet_name: Optional[str] = None,
-    use_llm: bool = True
+    sheet_name: Optional[str] = Form(None),
+    use_llm: bool = Form(True)
 ):
     """
     Automatically map Excel columns to canonical schema
@@ -1537,7 +1989,8 @@ async def load_excel_and_schedule(
         
         # Load into scheduler state (TEMPORARY COPIES - DO NOT MODIFY GLOBAL STATE)
         excel_df_ops = pd.DataFrame(jobs_data)
-        excel_df_ops['Total_Proc_Min'] = excel_df_ops['Proc_Time_per_Unit'] * excel_df_ops['Quantity']
+        excel_df_ops['Total_Proc_Min'] = pd.to_numeric(excel_df_ops['Proc_Time_per_Unit'], errors='coerce') * pd.to_numeric(excel_df_ops['Quantity'], errors='coerce')
+        excel_df_ops['Total_Proc_Min'] = pd.to_numeric(excel_df_ops['Total_Proc_Min'], errors='coerce').fillna(0)
         print(f"[Excel Schedule] Created operations dataframe with {len(excel_df_ops)} rows")
         
         # Load supporting data files (TEMPORARY - DO NOT MODIFY GLOBAL STATE)
@@ -1599,11 +2052,37 @@ async def load_excel_and_schedule(
         excel_df_effective = pd.DataFrame(effective_times)
         print(f"[Excel Schedule] Calculated {len(excel_df_effective)} effective time entries")
         
+        # If no eligible machines were found based on operation type mapping,
+        # fall back to assigning each operation to all machines (using speed factors)
+        # so the scheduler can still attempt to schedule uploaded Excel jobs.
         if excel_df_effective.empty:
-            raise HTTPException(
-                status_code=500,
-                detail="No eligible machines found for any operations. Check operation types and machine capabilities."
-            )
+            fallback_times = []
+            machine_ids = excel_df_machines['Machine_ID'].unique().tolist()
+            print(f"[Excel Schedule] No eligible machines found via op-type mapping. Falling back to all machines: {machine_ids}")
+            for idx, op in excel_df_ops.iterrows():
+                for machine_id in machine_ids:
+                    machine_row = excel_df_machines[excel_df_machines['Machine_ID'] == machine_id]
+                    if len(machine_row) == 0:
+                        continue
+                    speed_factor = machine_row.iloc[0].get('Speed_Factor', 1.0)
+                    try:
+                        effective_proc_time = op['Total_Proc_Min'] / float(speed_factor) if float(speed_factor) != 0 else op['Total_Proc_Min']
+                    except Exception:
+                        effective_proc_time = op['Total_Proc_Min']
+                    total_time = op.get('Setup_Time', 0) + effective_proc_time + op.get('Transfer_Min', 0)
+                    fallback_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': machine_id,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+            excel_df_effective = pd.DataFrame(fallback_times)
+            print(f"[Excel Schedule] Fallback effective entries created: {len(excel_df_effective)}")
+            if excel_df_effective.empty:
+                raise HTTPException(
+                    status_code=500,
+                    detail="No machines available for fallback assignment. Check machine data file."
+                )
         
         # Run scheduling with selected heuristic (ISOLATED - NO GLOBAL STATE MODIFICATION)
         print(f"[Excel Schedule] Starting scheduler with {heuristic}")
@@ -1630,8 +2109,58 @@ async def load_excel_and_schedule(
                 detail="Scheduling failed: Unable to generate schedule. Please check if operations have valid machine assignments."
             )
         
-        # Calculate metrics (ISOLATED - NO GLOBAL STATE MODIFICATION)
-        metrics = calculate_metrics(schedule, excel_df_ops, heuristic)
+        # Merge scheduler output with supporting fields from the Excel ops
+        try:
+            schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+            # Merge supporting fields so Proc_Time, Transfer_Time, Setup_Time reflect original data
+            merge_cols = ['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min', 'Transfer_Min', 'Setup_Time', 'Outsource_Cost']
+            available_merge = [c for c in merge_cols if c in excel_df_ops.columns]
+            if available_merge:
+                schedule_df = schedule_df.merge(excel_df_ops[available_merge], on='Operation_ID', how='left')
+
+            # Ensure Priority and Assignment_Type are present
+            if 'Priority' in schedule_df.columns:
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+            else:
+                schedule_df['Priority'] = 3
+            if 'Assignment_Type' in schedule_df.columns:
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            else:
+                schedule_df['Assignment_Type'] = 'IN_HOUSE'
+
+            # Use Total_Proc_Min as the canonical Proc_Time for display/metrics (shows the real work amount)
+            if 'Total_Proc_Min' in schedule_df.columns:
+                schedule_df['Proc_Time'] = pd.to_numeric(schedule_df['Total_Proc_Min'], errors='coerce').fillna(0)
+            else:
+                # Fallback to Scheduled_Proc_Time where available
+                schedule_df['Proc_Time'] = pd.to_numeric(schedule_df.get('Scheduled_Proc_Time', 0), errors='coerce').fillna(0)
+
+            # Safety: if any Proc_Time are still zero but Total_Proc_Min exists elsewhere, prefer that
+            try:
+                if 'Total_Proc_Min' in schedule_df.columns:
+                    mask_zero = schedule_df['Proc_Time'] == 0
+                    schedule_df.loc[mask_zero, 'Proc_Time'] = pd.to_numeric(schedule_df.loc[mask_zero, 'Total_Proc_Min'], errors='coerce').fillna(0)
+            except Exception:
+                pass
+
+            # Ensure Transfer_Time shows any provided Transfer_Min when scheduler left it as 0 for outsource
+            if 'Transfer_Min' in schedule_df.columns:
+                if 'Transfer_Time' in schedule_df.columns:
+                    schedule_df['Transfer_Time'] = schedule_df['Transfer_Time'].fillna(schedule_df['Transfer_Min'])
+                else:
+                    schedule_df['Transfer_Time'] = schedule_df['Transfer_Min']
+
+            # Ensure Setup_Time is present
+            if 'Setup_Time' in schedule_df.columns:
+                schedule_df['Setup_Time'] = schedule_df['Setup_Time'].fillna(0)
+            else:
+                schedule_df['Setup_Time'] = 0
+
+        except Exception:
+            schedule_df = schedule.copy()
+
+        # Calculate metrics (ISOLATED - NO GLOBAL STATE MODIFICATION) using merged schedule
+        metrics = calculate_metrics(schedule_df, excel_df_ops, heuristic)
         print(f"[Excel Schedule] Metrics calculated: {metrics}")
         
         # DO NOT store in global state - Excel upload is completely isolated
@@ -1642,7 +2171,7 @@ async def load_excel_and_schedule(
             "message": f"Scheduled {len(jobs)} jobs using {heuristic} (Excel data - isolated from Dashboard)",
             "job_count": len(jobs),
             "heuristic": heuristic,
-            "schedule": schedule.to_dict('records'),
+            "schedule": schedule_df.to_dict('records'),
             "metrics": metrics,
             "errors": errors,
             "warnings": warnings

@@ -50,9 +50,20 @@ function OutsourcingAnalysis() {
 
   const fetchOperationsData = async () => {
     try {
-      setLoading(false);
+      setLoading(true);
+      // Refresh dataset info (may include current policy/cost_threshold)
+      const info = await getDataInfo();
+      if (info && typeof info.cost_threshold !== 'undefined') {
+        // Backend stores threshold as raw number; convert to percent representation if needed
+        try {
+          setPolicyThreshold(Number(info.cost_threshold) || policyThreshold);
+        } catch {
+          // ignore
+        }
+      }
     } catch (error) {
       console.error('Failed to load data:', error);
+    } finally {
       setLoading(false);
     }
   };
@@ -63,19 +74,34 @@ function OutsourcingAnalysis() {
       
       // 1. Send update to backend
       const result = await updateOutsourcingPolicy(policyThreshold);
-      
+
       if (result.status === 'success') {
         enqueueSnackbar(`Success! Policy Updated.`, { variant: 'success' });
-        
-        // 2. CRITICAL STEP: Fetch the NEW schedule immediately
-        // This gets the fresh list where jobs are now marked as 'OUTSOURCE'
-        const scheduleResult = await getCurrentSchedule();
-        if (scheduleResult.schedule) {
-          setCurrentSchedule(scheduleResult.schedule);
+
+        // If backend returned recomputed metrics, update local store metrics
+        if (result.metrics) {
+          // setMetrics is available on the store via useSchedulerStore; call it if present
+          try {
+            // attempt to import setter via hook
+            const setter = useSchedulerStore.getState().setMetrics;
+            if (setter) setter(result.metrics);
+          } catch (e) {
+            // ignore safe-fail
+          }
         }
-        
-        // 3. Refresh operations data counts
-        fetchOperationsData();
+
+        // 2. Use updated schedule returned from the update API when available (faster), otherwise fetch current schedule
+        if (result.updated_schedule) {
+          setCurrentSchedule(result.updated_schedule);
+        } else {
+          const scheduleResult = await getCurrentSchedule();
+          if (scheduleResult && scheduleResult.schedule) {
+            setCurrentSchedule(scheduleResult.schedule);
+          }
+        }
+
+        // 3. Refresh operations data counts and local info
+        await fetchOperationsData();
       }
     } catch (error) {
       console.error("Policy Update Error:", error);
@@ -111,24 +137,28 @@ function OutsourcingAnalysis() {
   // Analyze outsourcing decisions
   const totalOps = currentSchedule.length;
   // NEW (Fixed)
-  // 1. Identify Outsourced (Strict check)
-  const outsourcedOps = currentSchedule.filter(op => 
-    op.Assignment_Type === 'OUTSOURCE' || op.Machine_ID === 'OUTSOURCE'
-  );
+  // 1. Identify Outsourced (Robust to varying field names/casing)
+  const outsourcedOps = currentSchedule.filter(op => {
+    const assignment = op.Assignment_Type ?? op.assignment_type ?? op.AssignmentType ?? op.assignmentType;
+    const machine = op.Machine_ID ?? op.machine_id ?? op.MachineId ?? op.machineId;
+    return String(assignment || '').toUpperCase() === 'OUTSOURCE' || String(machine || '').toUpperCase() === 'OUTSOURCE';
+  });
 
-  // 2. Identify In-House (Must NOT be outsourced)
-  const inHouseOps = currentSchedule.filter(op => 
-    op.Assignment_Type !== 'OUTSOURCE' && op.Machine_ID !== 'OUTSOURCE'
-  );
+  // 2. Identify In-House (Must NOT be outsourced, robust to field name variations)
+  const inHouseOps = currentSchedule.filter(op => {
+    const assignment = op.Assignment_Type ?? op.assignment_type ?? op.AssignmentType ?? op.assignmentType;
+    const machine = op.Machine_ID ?? op.machine_id ?? op.MachineId ?? op.machineId;
+    return String(assignment || '').toUpperCase() !== 'OUTSOURCE' && String(machine || '').toUpperCase() !== 'OUTSOURCE';
+  });
 
   const outsourcedCount = outsourcedOps.length;
   const inHouseCount = inHouseOps.length;
   const outsourcingRate = totalOps > 0 ? (outsourcedCount / totalOps) * 100 : 0;
 
   // Cost analysis
-  const totalOutsourceCost = outsourcedOps.reduce((sum, op) => sum + (op.Outsource_Cost || 0), 0);
+  const totalOutsourceCost = outsourcedOps.reduce((sum, op) => sum + (op.Outsource_Cost ?? op.outsource_cost ?? 0), 0);
   const totalInHouseCost = inHouseOps.reduce((sum, op) => {
-    const duration = (op.End_Time - op.Start_Time) || (op.Total_Proc_Min || 0);
+    const duration = (op.End_Time - op.Start_Time) || (op.Total_Proc_Min ?? op.Proc_Time ?? 0);
     return sum + (duration / 60 * 30); // Assuming $30/hr
   }, 0);
   const totalCost = totalOutsourceCost + totalInHouseCost;

@@ -308,7 +308,22 @@ def refresh_all_heuristics_metrics(ss):
             schedule = scheduler.run_scheduling(heuristic=heur)
             setattr(ss, schedule_key, schedule)
 
-        metrics.append(calculate_metrics(schedule, ss.base_df_ops, heur))
+        # Merge schedule with base ops so Proc_Time/Transfer_Time reflect original data
+        try:
+            schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+            merge_cols = ['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min', 'Transfer_Min', 'Setup_Time', 'Outsource_Cost']
+            available_merge = [c for c in merge_cols if c in ss.base_df_ops.columns]
+            if available_merge:
+                schedule_df = schedule_df.merge(ss.base_df_ops[available_merge], on='Operation_ID', how='left')
+
+            if 'Total_Proc_Min' in schedule_df.columns:
+                schedule_df['Proc_Time'] = pd.to_numeric(schedule_df['Total_Proc_Min'], errors='coerce').fillna(0)
+            else:
+                schedule_df['Proc_Time'] = schedule_df.get('Scheduled_Proc_Time', 0)
+        except Exception:
+            schedule_df = schedule
+
+        metrics.append(calculate_metrics(schedule_df, ss.base_df_ops, heur))
 
     ss.df_metrics = pd.DataFrame(metrics)
     ss.force_metric_refresh = False

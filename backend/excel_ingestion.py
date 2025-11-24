@@ -69,8 +69,8 @@ class ExcelIngestor:
             raise HTTPException(status_code=400, detail=f"Failed to load file: {str(e)}")
     
     async def parse_sheet(
-        self, 
-        file: UploadFile, 
+        self,
+        file: Optional[UploadFile] = None,
         sheet_name: Optional[str] = None,
         sample_rows: int = 10
     ) -> Dict[str, Any]:
@@ -89,10 +89,21 @@ class ExcelIngestor:
             - row_count: Total number of rows
         """
         try:
-            # Use stored file content and filename
+            # If a file was passed to this call, prefer reading that content
+            if file is not None:
+                try:
+                    content = await file.read()
+                    filename = file.filename.lower()
+                    # store for subsequent calls
+                    self.file_content = content
+                    self.filename = filename
+                except Exception:
+                    raise HTTPException(status_code=400, detail="Failed to read uploaded file")
+
+            # Ensure we have file content
             if not self.file_content or not self.filename:
                 raise HTTPException(status_code=400, detail="No file loaded. Please load a file first.")
-            
+
             # Read CSV or Excel based on stored filename
             if self.filename.endswith('.csv'):
                 self.df = pd.read_csv(BytesIO(self.file_content))

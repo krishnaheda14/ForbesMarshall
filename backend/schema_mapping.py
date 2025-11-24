@@ -42,11 +42,17 @@ class SchemaMapper:
         'ignore': 'Column to skip/ignore'
     }
     
-    def __init__(self, gemini_model=None, openrouter_api_key=None, use_openrouter=False):
-        """Initialize with optional Gemini AI model or OpenRouter API key"""
+    def __init__(self, gemini_model=None, openrouter_api_key=None, use_openrouter=False, mistral_api_key: Optional[str]=None, mistral_model: Optional[str]=None):
+        """Initialize with optional Gemini/OpenRouter AI models or Mistral API key
+
+        Preference order for LLM calls: Mistral (if key provided) -> OpenRouter -> Gemini
+        """
         self.gemini_model = gemini_model
         self.openrouter_api_key = openrouter_api_key
         self.use_openrouter = use_openrouter
+        self.mistral_api_key = mistral_api_key or os.environ.get('MISTRAL_API_KEY')
+        # default to a small/free Mistral model if not provided
+        self.mistral_model = mistral_model or os.environ.get('MISTRAL_MODEL', 'mistral-small-latest')
         
     def map_heuristic(self, columns_info: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """
@@ -119,8 +125,8 @@ class SchemaMapper:
         Returns:
             Dict mapping column names to {field, confidence, reasoning}
         """
-        # Check if we have either API available
-        if not self.use_openrouter and not self.gemini_model:
+        # Check if we have any LLM API available
+        if not (self.mistral_api_key or self.use_openrouter or self.gemini_model):
             print("[SchemaMapper] No AI model available, skipping LLM mapping")
             return {}
         
@@ -128,8 +134,46 @@ class SchemaMapper:
             # Build prompt
             prompt = self._build_llm_prompt(columns_info, sample_rows)
             
+            # Prefer using Mistral if API key is provided
+            if self.mistral_api_key:
+                print(f"[SchemaMapper] Calling Mistral ({self.mistral_model}) for column mapping...")
+                try:
+                    url = f"https://api.mistral.ai/v1/models/{self.mistral_model}/generate"
+                    payload = {
+                        "input": prompt,
+                        "max_new_tokens": 1024,
+                        "temperature": 0.3
+                    }
+                    headers = {"Authorization": f"Bearer {self.mistral_api_key}", "Content-Type": "application/json"}
+                    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+                    if resp.status_code == 200:
+                        resp_json = resp.json()
+                        # Try several common shapes for the generated text
+                        response_text = None
+                        if isinstance(resp_json, dict):
+                            if 'results' in resp_json and isinstance(resp_json['results'], list) and len(resp_json['results'])>0:
+                                # results -> {"output": "..."} or similar
+                                first = resp_json['results'][0]
+                                response_text = first.get('output') or first.get('text') or first.get('generated_text')
+                            elif 'output' in resp_json:
+                                response_text = resp_json.get('output')
+                            elif 'generated_text' in resp_json:
+                                response_text = resp_json.get('generated_text')
+                        if response_text is None:
+                            # Fallback: try to decode any top-level string fields
+                            response_text = json.dumps(resp_json)
+                    else:
+                        print(f"[SchemaMapper] Mistral API returned {resp.status_code}: {resp.text}")
+                        response_text = None
+                except Exception as mex:
+                    print(f"[SchemaMapper] Mistral call failed: {type(mex).__name__}: {str(mex)}")
+                    response_text = None
+                # If Mistral didn't return a usable response, fall back to other providers below
+                if not response_text:
+                    print("[SchemaMapper] Mistral mapping failed or empty response; falling back to other providers")
+                    response_text = None
             # Use OpenRouter (Claude) if available and preferred
-            if self.use_openrouter and self.openrouter_api_key:
+            elif self.use_openrouter and self.openrouter_api_key:
                 print("[SchemaMapper] Calling OpenRouter (Claude 3.5 Sonnet) for column mapping...")
                 response = requests.post(
                     url="https://openrouter.ai/api/v1/chat/completions",
@@ -163,11 +207,20 @@ class SchemaMapper:
                         print(f"[SchemaMapper] OpenRouter API error: {response.status_code} - {response.text}")
                         return {}
             else:
-                # Use Gemini
-                print("[SchemaMapper] Calling Gemini API for column mapping...")
-                response = self.gemini_model.generate_content(prompt)
-                response_text = response.text.strip()
+                # Use Gemini as last resort (only if provided)
+                if self.gemini_model:
+                    print("[SchemaMapper] Calling Gemini API for column mapping...")
+                    response = self.gemini_model.generate_content(prompt)
+                    response_text = response.text.strip()
+                else:
+                    print("[SchemaMapper] No LLM provider available after fallbacks")
+                    response_text = None
             
+            # If no textual response, abort LLM mapping
+            if not isinstance(response_text, str) or len(str(response_text).strip()) == 0:
+                print("[SchemaMapper] Empty or invalid LLM response; skipping LLM mapping")
+                return {}
+
             # Extract JSON from markdown code blocks if present
             if '```json' in response_text:
                 response_text = response_text.split('```json')[1].split('```')[0].strip()
@@ -320,9 +373,9 @@ Provide ONLY the JSON response, no additional text."""
         # Get heuristic mappings
         heuristic = self.map_heuristic(columns_info)
         
-        # Get LLM mappings if enabled
+        # Get LLM mappings if enabled and any provider is configured
         llm = {}
-        if use_llm and self.gemini_model:
+        if use_llm and (self.mistral_api_key or self.use_openrouter or self.gemini_model):
             llm = self.map_llm(columns_info, sample_rows)
         
         # Combine

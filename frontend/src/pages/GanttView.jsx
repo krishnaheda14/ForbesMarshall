@@ -179,7 +179,12 @@ function GanttView() {
   };
 
   // Prepare Gantt chart data for operations with colorful jobs
-  const ganttData = currentSchedule.map((item) => ({
+  // Filter out outsourced operations so they do not appear on the Gantt
+  const ganttData = (currentSchedule || []).filter((item) => {
+    const assignment = (item.Assignment_Type || '').toString().toUpperCase();
+    const machine = (item.Machine_ID || '').toString().toUpperCase();
+    return assignment !== 'OUTSOURCE' && machine !== 'OUTSOURCE';
+  }).map((item) => ({
     x: [item.Start_Time, item.End_Time],
     y: [item.Machine_ID, item.Machine_ID],
     type: 'line',
@@ -220,11 +225,43 @@ function GanttView() {
   }));
 
   const allTraces = [...ganttData, ...maintenanceTraces];
+  // Compute adaptive x-axis tick spacing based on time span (aim for ~8-12 ticks)
+  let dtick = 60;
+  try {
+    const starts = ganttData.map(t => t.x[0]).filter(v => typeof v === 'number');
+    const ends = ganttData.map(t => t.x[1]).filter(v => typeof v === 'number');
+    const maintStarts = maintenanceData.map(m => m.start).filter(v => typeof v === 'number');
+    const maintEnds = maintenanceData.map(m => m.end).filter(v => typeof v === 'number');
+    const allStarts = [...starts, ...maintStarts];
+    const allEnds = [...ends, ...maintEnds];
+    if (allStarts.length && allEnds.length) {
+      const minStart = Math.min(...allStarts);
+      const maxEnd = Math.max(...allEnds);
+      const span = Math.max(1, maxEnd - minStart);
+      // Candidate tick sizes (minutes) including rounded thousands for large spans
+      const candidates = [1,5,10,15,30,60,120,240,480,720,1440, 3000, 5000, 10000, 20000, 50000, 100000];
+      const target = Math.ceil(span / 10);
+      // Prefer a candidate that is a round thousand when span is large
+      if (target >= 1000) {
+        // round up to nearest thousand-like candidate
+        dtick = candidates.find(c => c >= target) || candidates[candidates.length - 1];
+        // ensure we pick a nice round thousand (e.g., 1000, 2000, 5000)
+        if (dtick < 1000) dtick = 1000;
+      } else {
+        dtick = candidates.find(c => c >= target) || candidates[candidates.length - 1];
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to compute adaptive dtick for Gantt, defaulting to 60', e);
+    dtick = 60;
+  }
 
   const layout = {
     title: `${currentHeuristic} Schedule - Gantt Chart`,
     xaxis: {
       title: 'Time (minutes)',
+      dtick,
+      tickformat: ',.0f',
       showgrid: true,
       zeroline: false,
     },

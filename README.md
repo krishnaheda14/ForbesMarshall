@@ -186,7 +186,7 @@ ForbesMarshall/
 
 **Port**: Default `8001` (change in `main.py`)
 **CORS**: Configured for `http://localhost:5173`
-**Gemini Model**: `gemini-1.5-flash` (configurable in `schema_mapping.py`)
+**Gemini Model**: `gemini-flash-latest` (configurable in `schema_mapping.py`)
 
 ### Frontend Configuration
 

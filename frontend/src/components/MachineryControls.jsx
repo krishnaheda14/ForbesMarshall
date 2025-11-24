@@ -8,16 +8,17 @@ import {
   TextField,
   Button,
   Box,
+  Grid,
+  InputAdornment,
   Slider,
 } from '@mui/material';
 import {
   ExpandMore,
   Build as BreakdownIcon,
   PriorityHigh as PriorityIcon,
-  AttachMoney as OutsourceIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { simulateBreakdown, updateJobPriority, updateOutsourcingPolicy, getCurrentSchedule, computeAllHeuristics, applyHeuristic } from '../services/api';
+import { simulateBreakdown, updateJobPriority, getCurrentSchedule, computeAllHeuristics, applyHeuristic } from '../services/api';
 import useSchedulerStore from '../store/useSchedulerStore';
 
 function MachineryControls() {
@@ -26,15 +27,12 @@ function MachineryControls() {
   
   // Breakdown state
   const [machineId, setMachineId] = useState('M1');
-  const [breakdownStart, setBreakdownStart] = useState(1000);
+  const [breakdownStart, setBreakdownStart] = useState(5000);
   const [breakdownDuration, setBreakdownDuration] = useState(100);
   
   // Priority state
   const [jobId, setJobId] = useState('');
   const [priority, setPriority] = useState(2);
-  
-  // Outsourcing state
-  const [costThreshold, setCostThreshold] = useState(0.9);
 
   const handleBreakdown = async () => {
     try {
@@ -44,12 +42,35 @@ function MachineryControls() {
       const { setCurrentSchedule, reset } = useSchedulerStore.getState();
       setCurrentSchedule(null);
       
-      enqueueSnackbar('Breakdown simulated! All schedules cleared. Please recompute heuristics to see rescheduled operations.', {
-        variant: 'warning',
-        autoHideDuration: 5000,
+      enqueueSnackbar('Breakdown simulated! Recomputing heuristics for current view...', {
+        variant: 'info',
+        autoHideDuration: 3000,
       });
+
+      // Recompute all heuristics and re-apply the currently selected heuristic so the Gantt updates
+      try {
+        const computeResult = await computeAllHeuristics();
+        // update store metrics
+        const { setMetrics } = useSchedulerStore.getState();
+        if (computeResult && computeResult.results) {
+          setMetrics(computeResult.results);
+        }
+
+        // Apply previously selected heuristic (or SPT as default)
+        const prevHeur = currentHeuristic || 'SPT';
+        const applyResult = await applyHeuristic(prevHeur);
+        if (applyResult && applyResult.schedule) {
+          const { setCurrentSchedule } = useSchedulerStore.getState();
+          setCurrentSchedule(applyResult.schedule);
+        }
+
+        enqueueSnackbar('Heuristics recomputed and schedule updated with breakdown.', { variant: 'success', autoHideDuration: 4000 });
+      } catch (err) {
+        console.error('Error recomputing heuristics after breakdown:', err);
+        enqueueSnackbar('Breakdown simulated but failed to recompute heuristics. Please recompute manually.', { variant: 'warning' });
+      }
       
-      console.log('Breakdown simulated, schedules cleared');
+      console.log('Breakdown simulated, heuristics recomputed and schedule updated');
     } catch (error) {
       console.error('Breakdown simulation error:', error);
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
@@ -95,42 +116,6 @@ function MachineryControls() {
     }
   };
 
-  const handleOutsourcingUpdate = async () => {
-    try {
-      const result = await updateOutsourcingPolicy(costThreshold);
-
-      // Update metrics in store for recomputed heuristics
-      const { metrics: existingMetrics, setMetrics } = useSchedulerStore.getState();
-      if (result.metrics) {
-        // result.metrics is a dict { heur: metrics }
-        // Merge with existing metrics in store
-        setMetrics({ ...(existingMetrics || {}), ...(result.metrics || {}) });
-      }
-
-      enqueueSnackbar(
-        `${result.message} ${result.new_outsourced_count}/${result.total_operations} operations outsourced.`, 
-        { variant: 'success' }
-      );
-
-      // Refresh schedule if a heuristic is active: fetch current schedule from backend
-      if (currentHeuristic) {
-        try {
-          const scheduleResult = await getCurrentSchedule();
-          if (scheduleResult && scheduleResult.schedule) {
-            setCurrentSchedule(scheduleResult.schedule);
-          }
-        } catch (err) {
-          // Non-fatal: user can refresh manually
-          console.warn('Failed to refresh schedule after outsourcing update', err);
-        }
-      }
-    } catch (error) {
-      enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, {
-        variant: 'error',
-      });
-    }
-  };
-
   return (
     <Box>
       <Typography variant="caption" sx={{ mb: 1, display: 'block', opacity: 0.9 }}>
@@ -153,38 +138,64 @@ function MachineryControls() {
           </Box>
         </AccordionSummary>
         <AccordionDetails>
-          <TextField
-            fullWidth
-            size="small"
-            label="Machine ID"
-            value={machineId}
-            onChange={(e) => setMachineId(e.target.value)}
-            sx={{ mb: 1.5 }}
-            InputLabelProps={{ style: { color: 'rgba(255,255,255,0.7)' } }}
-            InputProps={{ style: { color: 'white' } }}
-          />
-          <Typography variant="caption" gutterBottom>
-            Start Time (min): {breakdownStart}
-          </Typography>
-          <Slider
-            value={breakdownStart}
-            onChange={(e, val) => setBreakdownStart(val)}
-            min={0}
-            max={25000}
-            step={100}
-            sx={{ mb: 1.5, color: 'white' }}
-          />
-          <Typography variant="caption" gutterBottom>
-            Duration (min): {breakdownDuration}
-          </Typography>
-          <Slider
-            value={breakdownDuration}
-            onChange={(e, val) => setBreakdownDuration(val)}
-            min={0}
-            max={500}
-            step={10}
-            sx={{ mb: 1.5, color: 'white' }}
-          />
+          <Grid container spacing={1} sx={{ mb: 1.5 }}>
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Machine ID"
+                value={machineId}
+                onChange={(e) => setMachineId(e.target.value)}
+                InputLabelProps={{ style: { color: 'rgba(255,255,255,0.7)' } }}
+                InputProps={{ style: { color: 'white' } }}
+              />
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Start Time"
+                type="number"
+                value={breakdownStart}
+                onChange={(e) => setBreakdownStart(Number(e.target.value))}
+                onBlur={() => {
+                  // clamp to valid range
+                  const min = 5000; const max = 100000;
+                  if (Number.isNaN(breakdownStart) || breakdownStart < min) setBreakdownStart(min);
+                  else if (breakdownStart > max) setBreakdownStart(max);
+                }}
+                helperText="Minutes (5000 - 100000)"
+                inputProps={{ min: 5000, max: 100000, step: 1 }}
+                InputProps={{
+                  endAdornment: <InputAdornment position="end">min</InputAdornment>,
+                  style: { color: 'white' }
+                }}
+              />
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Duration"
+                type="number"
+                value={breakdownDuration}
+                onChange={(e) => setBreakdownDuration(Number(e.target.value))}
+                onBlur={() => {
+                  const min = 100; const max = 5000;
+                  if (Number.isNaN(breakdownDuration) || breakdownDuration < min) setBreakdownDuration(min);
+                  else if (breakdownDuration > max) setBreakdownDuration(max);
+                }}
+                helperText="Minutes (100 - 5000)"
+                inputProps={{ min: 100, max: 5000, step: 1 }}
+                InputProps={{
+                  endAdornment: <InputAdornment position="end">min</InputAdornment>,
+                  style: { color: 'white' }
+                }}
+              />
+            </Grid>
+          </Grid>
           <Button
             fullWidth
             size="small"
@@ -243,44 +254,6 @@ function MachineryControls() {
             sx={{ backgroundColor: '#f59e0b' }}
           >
             Update Priority
-          </Button>
-        </AccordionDetails>
-      </Accordion>
-
-      {/* Outsourcing Policy */}
-      <Accordion
-        sx={{
-          backgroundColor: 'rgba(255,255,255,0.1)',
-          color: 'white',
-          '&:before': { display: 'none' },
-        }}
-      >
-        <AccordionSummary expandIcon={<ExpandMore sx={{ color: 'white' }} />}>
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
-            <OutsourceIcon sx={{ mr: 1, fontSize: 18 }} />
-            <Typography variant="caption">Outsourcing</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Typography variant="caption" gutterBottom>
-            Cost Threshold: {costThreshold.toFixed(2)}
-          </Typography>
-          <Slider
-            value={costThreshold}
-            onChange={(e, val) => setCostThreshold(val)}
-            min={0.5}
-            max={1.5}
-            step={0.05}
-            sx={{ mb: 1.5, color: 'white' }}
-          />
-          <Button
-            fullWidth
-            size="small"
-            variant="contained"
-            onClick={handleOutsourcingUpdate}
-            sx={{ backgroundColor: '#8b5cf6' }}
-          >
-            Update Policy
           </Button>
         </AccordionDetails>
       </Accordion>

@@ -90,6 +90,7 @@ function OperationStatus() {
 
   const handleExport = () => {
     if (!currentSchedule || currentSchedule.length === 0) return;
+    // Export without Proc_Time and Release columns per user request
     const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Start_Time,End_Time,Status,Priority\n';
     const csvRows = currentSchedule
       .map((op) => {
@@ -104,17 +105,8 @@ function OperationStatus() {
     a.download = `operations_${currentHeuristic || 'schedule'}.csv`;
     a.click();
   };
+  // --- SAFE FILTERING LOGIC (Fixes hooks ordering crash) ---
 
-  if (!currentHeuristic) {
-    return (
-      <Container maxWidth="xl">
-        <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
-        <Alert severity="info">No heuristic applied. Please go to Dashboard and Apply a schedule.</Alert>
-      </Container>
-    );
-  }
-
-  // --- SAFE FILTERING LOGIC (Fixes the crash) ---
   const processedOperations = useMemo(() => {
     const searchLower = (searchTerm || '').toLowerCase();
     
@@ -155,6 +147,15 @@ function OperationStatus() {
     });
   }, [currentSchedule, searchTerm, order, orderBy]);
 
+  if (!currentHeuristic) {
+    return (
+      <Container maxWidth="xl">
+        <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
+        <Alert severity="info">No heuristic applied. Please go to Dashboard and Apply a schedule.</Alert>
+      </Container>
+    );
+  }
+
   // Slice for Pagination
   const visibleRows = processedOperations.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
@@ -177,6 +178,8 @@ function OperationStatus() {
       </TableSortLabel>
     </TableCell>
   );
+
+  const showProcTime = currentHeuristic === 'SPT';
 
   return (
     <Container maxWidth="xl">
@@ -208,6 +211,8 @@ function OperationStatus() {
             InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
           />
 
+          {/* CR column removed per request */}
+
           <TableContainer component={Paper} sx={{ maxHeight: 600 }}>
             <Table stickyHeader size="small">
               <TableHead>
@@ -217,6 +222,8 @@ function OperationStatus() {
                   <SortableHeader id="Priority" label="Priority" />
                   <TableCell><strong>Assignment</strong></TableCell>
                   <SortableHeader id="Machine_ID" label="Machine" />
+                  {showProcTime && <SortableHeader id="Total_Proc_Min" label="Proc Time (min)" align="right" />}
+                  <SortableHeader id="Release_Time_Min" label="Release" align="right" />
                   <SortableHeader id="Start_Time" label="Start" align="right" />
                   <SortableHeader id="End_Time" label="End" align="right" />
                   <SortableHeader id="Duration" label="Duration" align="right" />
@@ -249,6 +256,16 @@ function OperationStatus() {
                           />
                         </TableCell>
                         <TableCell>{op.Machine_ID || '—'}</TableCell>
+                        {showProcTime && <TableCell align="right">{
+                          (op.Total_Proc_Min ?? op.Proc_Time ?? op.Scheduled_Proc_Time ?? op.proc_time) != null
+                            ? Number(op.Total_Proc_Min ?? op.Proc_Time ?? op.Scheduled_Proc_Time ?? op.proc_time).toFixed(0)
+                            : '—'
+                        }</TableCell>}
+                        <TableCell align="right">{
+                          (op.Release_Time_Min ?? op.Release_Time ?? op.Release ?? null) != null
+                            ? ((op.Release_Time_Min ?? op.Release_Time ?? op.Release).toFixed ? (op.Release_Time_Min ?? op.Release_Time ?? op.Release).toFixed(0) : (op.Release_Time_Min ?? op.Release_Time ?? op.Release))
+                            : '—'
+                        }</TableCell>
                         <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
                         <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
                         <TableCell align="right">{(op.End_Time - op.Start_Time)?.toFixed(0)}</TableCell>
@@ -270,7 +287,7 @@ function OperationStatus() {
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={11} align="center" sx={{ py: 4 }}>
+                    <TableCell colSpan={12} align="center" sx={{ py: 4 }}>
                       <Typography color="text.secondary">No operations found.</Typography>
                     </TableCell>
                   </TableRow>
