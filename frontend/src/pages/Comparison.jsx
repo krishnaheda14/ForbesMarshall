@@ -1,4 +1,3 @@
-// src/pages/Comparison.jsx
 import React, { useEffect, useState } from 'react';
 import {
   Container,
@@ -16,10 +15,6 @@ import {
   Box,
   Button,
   Alert,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
 } from '@mui/material';
 import {
   EmojiEvents as TrophyIcon,
@@ -47,7 +42,6 @@ function Comparison() {
       setLoading(true);
       const result = await getMetricsComparison();
       
-      // Convert array to object with heuristic names as keys
       if (result.metrics && Array.isArray(result.metrics)) {
         const metricsObj = {};
         result.metrics.forEach((m) => {
@@ -60,7 +54,6 @@ function Comparison() {
       }
     } catch (error) {
       console.error('Failed to fetch metrics:', error);
-      // Expected if no metrics computed yet
     } finally {
       setLoading(false);
     }
@@ -89,9 +82,25 @@ function Comparison() {
     }
   };
 
+  // --- STRICT & SAFE FILTER IMPLEMENTATION ---
+  // Removed CP-SAT from this list
+  const ALLOWED_HEURISTICS = ['SPT', 'EDD', 'CR', 'PRIORITY'];
 
-  // Table metrics array (each entry is a metrics object)
-  const metricsArray = Object.values(metrics);
+  // Prepare metrics array with filtering
+  // 1. Safely extract metrics (handle potential nulls in the source object)
+  const safeBackendMetrics = Object.values(metrics || {})
+    .map((m) => m?.metrics)
+    .filter(m => m !== undefined && m !== null);
+
+  const rawMetrics = [
+    ...safeBackendMetrics
+  ];
+
+  // 2. Apply the allowed list filter safely
+  const metricsArray = rawMetrics.filter(item => 
+    item && item.Heuristic && ALLOWED_HEURISTICS.includes(item.Heuristic)
+  );
+  // ------------------------------------
 
   if (metricsArray.length === 0) {
     return (
@@ -306,8 +315,6 @@ function Comparison() {
           </Box>
         </CardContent>
       </Card>
-
-      {/* Removed CP-SAT Explanation Dialog - Only our heuristics are shown */}
     </Container>
   );
 }

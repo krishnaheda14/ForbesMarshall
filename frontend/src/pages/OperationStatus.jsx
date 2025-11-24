@@ -1,5 +1,4 @@
-// src/pages/OperationStatus.jsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   Container,
   Typography,
@@ -18,6 +17,9 @@ import {
   TextField,
   InputAdornment,
   Button,
+  TableSortLabel,
+  TablePagination,
+  CircularProgress
 } from '@mui/material';
 import { Search as SearchIcon, Download as DownloadIcon, Refresh as RefreshIcon } from '@mui/icons-material';
 import useSchedulerStore from '../store/useSchedulerStore';
@@ -26,208 +28,266 @@ import { getCurrentSchedule } from '../services/api';
 function OperationStatus() {
   const { currentHeuristic, currentSchedule, setCurrentSchedule } = useSchedulerStore();
   const [searchTerm, setSearchTerm] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  // Pagination State
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
 
+  // Sorting State
+  const [order, setOrder] = useState('asc');
+  const [orderBy, setOrderBy] = useState('Start_Time');
+
+  // 1. Auto-Configure Sort based on selected Heuristic
   useEffect(() => {
-    if (currentHeuristic && !currentSchedule) {
+    if (currentHeuristic === 'EDD') {
+      setOrderBy('Due_Time');
+      setOrder('asc');
+    } else if (currentHeuristic === 'SPT') {
+      setOrderBy('Duration');
+      setOrder('asc');
+    } else {
+      setOrderBy('Start_Time');
+      setOrder('asc');
+    }
+  }, [currentHeuristic]);
+
+  // 2. Fetch Schedule if missing
+  useEffect(() => {
+    if (currentHeuristic && (!currentSchedule || currentSchedule.length === 0)) {
       fetchSchedule();
     }
   }, [currentHeuristic]);
-  
-  // Auto-refresh when currentSchedule changes
-  useEffect(() => {
-    // This will cause re-render when schedule is updated elsewhere
-  }, [currentSchedule]);
 
   const fetchSchedule = async () => {
     try {
+      setLoading(true);
       const result = await getCurrentSchedule();
-      setCurrentSchedule(result.schedule);
+      if (result && result.schedule) {
+        setCurrentSchedule(result.schedule);
+      }
     } catch (error) {
-      // Expected
+      console.error("Error fetching schedule");
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const handleRequestSort = (property) => {
+    const isAsc = orderBy === property && order === 'asc';
+    setOrder(isAsc ? 'desc' : 'asc');
+    setOrderBy(property);
+  };
+
+  const handleChangePage = (event, newPage) => {
+    setPage(newPage);
+  };
+
+  const handleChangeRowsPerPage = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0);
   };
 
   const handleExport = () => {
     if (!currentSchedule || currentSchedule.length === 0) return;
-
-    const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Start_Time,End_Time,Status\n';
+    const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Start_Time,End_Time,Status,Priority\n';
     const csvRows = currentSchedule
       .map((op) => {
         const status = op.Tardiness > 0 ? 'Late' : 'On Time';
-        return `${op.Job_ID},${op.Operation_ID},${op.Machine_ID},${op.Start_Time},${op.End_Time},${status}`;
+        return `${op.Job_ID},${op.Operation_ID},${op.Machine_ID},${op.Start_Time},${op.End_Time},${status},${op.Priority}`;
       })
       .join('\n');
-
     const blob = new Blob([csvHeader + csvRows], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `operations_${currentHeuristic}.csv`;
+    a.download = `operations_${currentHeuristic || 'schedule'}.csv`;
     a.click();
   };
 
-  if (!currentHeuristic || !currentSchedule || currentSchedule.length === 0) {
+  if (!currentHeuristic) {
     return (
       <Container maxWidth="xl">
-        <Typography variant="h1" gutterBottom>
-          📋 Operation Status
-        </Typography>
-        <Alert severity="info">
-          No operation data available. Please apply a heuristic first.
-        </Alert>
+        <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
+        <Alert severity="info">No heuristic applied. Please go to Dashboard and Apply a schedule.</Alert>
       </Container>
     );
   }
 
-  const filteredOperations = currentSchedule.filter(
-    (op) =>
-      op.Job_ID?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      op.Operation_ID?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      op.Machine_ID?.toLowerCase().includes(searchTerm.toLowerCase())
+  // --- SAFE FILTERING LOGIC (Fixes the crash) ---
+  const processedOperations = useMemo(() => {
+    const searchLower = (searchTerm || '').toLowerCase();
+    
+    const filtered = (currentSchedule || []).filter((op) => {
+      // We use String() and || '' to ensure we NEVER call toLowerCase on null
+      const job = String(op.Job_ID || '').toLowerCase();
+      const opId = String(op.Operation_ID || '').toLowerCase();
+      const machine = String(op.Machine_ID || '').toLowerCase();
+      
+      return job.includes(searchLower) || opId.includes(searchLower) || machine.includes(searchLower);
+    });
+
+    return filtered.sort((a, b) => {
+      // 1. Primary Sort: Priority (Always 1 -> 2 -> 3 -> 4)
+      const priorityA = parseInt(a.Priority || 3);
+      const priorityB = parseInt(b.Priority || 3);
+      
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+
+      // 2. Secondary Sort
+      let aValue = a[orderBy];
+      let bValue = b[orderBy];
+
+      if (orderBy === 'Duration') {
+        aValue = (a.End_Time || 0) - (a.Start_Time || 0);
+        bValue = (b.End_Time || 0) - (b.Start_Time || 0);
+      }
+
+      // Handle nulls safely during sort
+      if (aValue === undefined || aValue === null) aValue = -Infinity;
+      if (bValue === undefined || bValue === null) bValue = -Infinity;
+
+      if (bValue < aValue) return order === 'asc' ? 1 : -1;
+      if (bValue > aValue) return order === 'asc' ? -1 : 1;
+      return 0;
+    });
+  }, [currentSchedule, searchTerm, order, orderBy]);
+
+  // Slice for Pagination
+  const visibleRows = processedOperations.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+
+  const getPriorityColor = (priority) => {
+    const p = parseInt(priority);
+    if (p === 1) return 'error';
+    if (p === 2) return 'warning';
+    if (p === 3) return 'info';
+    return 'default';
+  };
+
+  const SortableHeader = ({ id, label, align = 'left' }) => (
+    <TableCell align={align} sortDirection={orderBy === id ? order : false}>
+      <TableSortLabel
+        active={orderBy === id}
+        direction={orderBy === id ? order : 'asc'}
+        onClick={() => handleRequestSort(id)}
+      >
+        <strong>{label}</strong>
+      </TableSortLabel>
+    </TableCell>
   );
 
   return (
     <Container maxWidth="xl">
       <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Box>
-          <Typography variant="h1" gutterBottom>
-            📋 Operation Status
-          </Typography>
+          <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
           <Typography variant="body1" color="text.secondary">
-            Detailed view of all scheduled operations for {currentHeuristic}
+            Viewing <strong>{processedOperations.length}</strong> operations.
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button
-            variant="outlined"
-            startIcon={<RefreshIcon />}
+          <Button 
+            variant="outlined" 
+            startIcon={loading ? <CircularProgress size={20} /> : <RefreshIcon />} 
             onClick={fetchSchedule}
+            disabled={loading}
           >
             Refresh
           </Button>
-          <Button
-            variant="contained"
-            startIcon={<DownloadIcon />}
-            onClick={handleExport}
-          >
-            Export CSV
-          </Button>
+          <Button variant="contained" startIcon={<DownloadIcon />} onClick={handleExport}>Export CSV</Button>
         </Box>
       </Box>
 
       <Card>
         <CardContent>
           <TextField
-            fullWidth
-            size="small"
-            placeholder="Search by Job ID, Operation ID, or Machine ID..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon />
-                </InputAdornment>
-              ),
-            }}
+            fullWidth size="small" placeholder="Search..." value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)} sx={{ mb: 2 }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
           />
 
           <TableContainer component={Paper} sx={{ maxHeight: 600 }}>
-            <Table stickyHeader>
+            <Table stickyHeader size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell><strong>Job ID</strong></TableCell>
-                  <TableCell><strong>Operation ID</strong></TableCell>
-                  <TableCell><strong>Priority</strong></TableCell>
+                  <SortableHeader id="Job_ID" label="Job ID" />
+                  <SortableHeader id="Operation_ID" label="Operation ID" />
+                  <SortableHeader id="Priority" label="Priority" />
                   <TableCell><strong>Assignment</strong></TableCell>
-                  <TableCell><strong>Machine</strong></TableCell>
-                  <TableCell align="right"><strong>Proc Time (min)</strong></TableCell>
-                  {currentHeuristic === 'CR' && (
-                    <TableCell align="right"><strong>CR</strong></TableCell>
-                  )}
-                  <TableCell align="right"><strong>Start (min)</strong></TableCell>
-                  <TableCell align="right"><strong>End (min)</strong></TableCell>
-                  <TableCell align="right"><strong>Duration (min)</strong></TableCell>
-                  <TableCell align="right"><strong>Due Time (min)</strong></TableCell>
-                  <TableCell align="right"><strong>Tardiness (min)</strong></TableCell>
+                  <SortableHeader id="Machine_ID" label="Machine" />
+                  <SortableHeader id="Start_Time" label="Start" align="right" />
+                  <SortableHeader id="End_Time" label="End" align="right" />
+                  <SortableHeader id="Duration" label="Duration" align="right" />
+                  <SortableHeader id="Due_Time" label="Due Time" align="right" />
+                  <SortableHeader id="Tardiness" label="Tardiness" align="right" />
                   <TableCell><strong>Status</strong></TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filteredOperations.map((op, index) => {
-                  const getPriorityColor = (priority) => {
-                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 2;
-                    if (p === 1) return 'error';      // High
-                    if (p === 2) return 'warning';    // Medium
-                    if (p === 3) return 'default';    // Low
-                    return 'default';
-                  };
-                  const getPriorityLabel = (priority) => {
-                    const p = typeof priority === 'number' ? priority : parseInt(priority) || 2;
-                    if (p === 1) return 'High';
-                    if (p === 2) return 'Medium';
-                    if (p === 3) return 'Low';
-                    return `Priority ${p}`;
-                  };
-                  const assignmentType = op.Assignment_Type || (op.Machine_ID ? 'IN_HOUSE' : 'OUTSOURCE');
-                  const isOutsourced = assignmentType === 'OUTSOURCE';
-                  
-                  return (
-                  <TableRow key={index} sx={{ '&:hover': { bgcolor: 'action.hover' } }}>
-                    <TableCell><strong>{op.Job_ID}</strong></TableCell>
-                    <TableCell>{op.Operation_ID}</TableCell>
-                    <TableCell>
-                      <Chip
-                        label={getPriorityLabel(op.Priority)}
-                        color={getPriorityColor(op.Priority)}
-                        size="small"
-                        sx={{ fontWeight: 'bold' }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={isOutsourced ? 'Outsourced' : 'In-House'}
-                        color={isOutsourced ? 'secondary' : 'primary'}
-                        size="small"
-                        variant={isOutsourced ? 'filled' : 'outlined'}
-                        sx={{ fontWeight: 'bold' }}
-                      />
-                    </TableCell>
-                    <TableCell>{op.Machine_ID || '—'}</TableCell>
-                    <TableCell align="right">{(op.Proc_Time != null ? op.Proc_Time.toFixed(0) : (op.Total_Proc_Min != null ? op.Total_Proc_Min.toFixed(0) : '—'))}</TableCell>
-                    {currentHeuristic === 'CR' && (
-                      <TableCell align="right">{op.Critical_Ratio != null ? Number(op.Critical_Ratio).toFixed(2) : '—'}</TableCell>
-                    )}
-                    <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
-                    <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
-                    <TableCell align="right">
-                      {(op.End_Time - op.Start_Time)?.toFixed(0)}
-                    </TableCell>
-                    <TableCell align="right">{op.Due_Time?.toFixed(0)}</TableCell>
-                    <TableCell align="right">
-                      <span style={{ color: op.Tardiness > 0 ? '#d32f2f' : '#2e7d32', fontWeight: 'bold' }}>
-                        {op.Tardiness > 0 ? op.Tardiness.toFixed(0) : '0'}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={op.Tardiness > 0 ? 'Late' : 'On Time'}
-                        color={op.Tardiness > 0 ? 'error' : 'success'}
-                        size="small"
-                      />
+                {visibleRows.length > 0 ? (
+                  visibleRows.map((op, index) => {
+                    const isOutsourced = op.Assignment_Type === 'OUTSOURCE' || op.Machine_ID === 'OUTSOURCE';
+                    return (
+                      <TableRow key={index} hover>
+                        <TableCell>{op.Job_ID}</TableCell>
+                        <TableCell>{op.Operation_ID}</TableCell>
+                        <TableCell>
+                          <Chip 
+                            label={op.Priority} 
+                            color={getPriorityColor(op.Priority)} 
+                            size="small" 
+                            sx={{ fontWeight: 'bold', minWidth: 30 }} 
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={isOutsourced ? 'Outsourced' : 'In-House'}
+                            color={isOutsourced ? 'secondary' : 'primary'}
+                            size="small" variant={isOutsourced ? 'filled' : 'outlined'}
+                          />
+                        </TableCell>
+                        <TableCell>{op.Machine_ID || '—'}</TableCell>
+                        <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
+                        <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
+                        <TableCell align="right">{(op.End_Time - op.Start_Time)?.toFixed(0)}</TableCell>
+                        <TableCell align="right">{op.Due_Time?.toFixed(0)}</TableCell>
+                        <TableCell align="right">
+                          <span style={{ color: op.Tardiness > 0 ? '#d32f2f' : '#2e7d32', fontWeight: 'bold' }}>
+                            {op.Tardiness > 0 ? op.Tardiness.toFixed(0) : '0'}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={op.Tardiness > 0 ? 'Late' : 'On Time'}
+                            color={op.Tardiness > 0 ? 'error' : 'success'}
+                            size="small"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={11} align="center" sx={{ py: 4 }}>
+                      <Typography color="text.secondary">No operations found.</Typography>
                     </TableCell>
                   </TableRow>
-                )})}
+                )}
               </TableBody>
             </Table>
           </TableContainer>
-
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="caption" color="text.secondary">
-              Showing {filteredOperations.length} of {currentSchedule.length} operations
-            </Typography>
-          </Box>
+          
+          <TablePagination
+            rowsPerPageOptions={[10, 25, 50, 100]}
+            component="div"
+            count={processedOperations.length}
+            rowsPerPage={rowsPerPage}
+            page={page}
+            onPageChange={handleChangePage}
+            onRowsPerPageChange={handleChangeRowsPerPage}
+          />
         </CardContent>
       </Card>
     </Container>

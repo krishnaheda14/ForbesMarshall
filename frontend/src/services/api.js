@@ -164,10 +164,11 @@ export const deleteJob = async (jobId) => {
   return response.data;
 };
 
-// Outsourcing
+// Outsourcing - UPDATED AND FIXED
 export const updateOutsourcingPolicy = async (costThreshold) => {
+  // Matches pattern of other working endpoints
   const response = await api.post('/api/outsourcing/policy', {
-    cost_threshold: costThreshold,
+    cost_threshold: Number(costThreshold), // Ensure numeric type
   });
   return response.data;
 };

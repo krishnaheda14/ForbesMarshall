@@ -269,7 +269,6 @@ class CNCScheduler:
                 available_ops,
                 key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'], x[0]['Total_Proc_Min'])
             )
-        # ...existing code...
         else:
             # Default fallback to SPT
             op, earliest_start = min(
@@ -278,7 +277,6 @@ class CNCScheduler:
             )
 
         return op, earliest_start
-
     def run_scheduling(self, heuristic='SPT', verbose=True):
         """Run the complete scheduling algorithm"""
         if verbose:

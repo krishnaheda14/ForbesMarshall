@@ -33,7 +33,15 @@ const HEURISTICS = [
 
 function ComputeControls() {
   const { enqueueSnackbar } = useSnackbar();
-  const { currentHeuristic, setMetrics, setSchedules, setLoading, loading } = useSchedulerStore();
+  // UPDATED: Added setCurrentSchedule to the destructuring
+  const { 
+    currentHeuristic, 
+    setMetrics, 
+    setCurrentSchedule, // <--- IMPORTANT: Needed to update the table
+    setLoading, 
+    loading 
+  } = useSchedulerStore();
+
   const [computeProgress, setComputeProgress] = useState({
     active: false,
     current: null,
@@ -125,14 +133,10 @@ function ComputeControls() {
     try {
       setLoading(true);
       const result = await applyHeuristic(currentHeuristic);
-      // Save schedule & metrics in store so Operations view updates immediately
-      const { setCurrentSchedule, addSchedule } = useSchedulerStore.getState();
-      if (result && result.schedule) {
+      
+      // UPDATED: Immediately update the global schedule store
+      if (result.schedule) {
         setCurrentSchedule(result.schedule);
-      }
-      if (result && result.metrics) {
-        // store the schedule+metrics under the heuristic
-        addSchedule(currentHeuristic, result.schedule || [], result.metrics);
       }
 
       enqueueSnackbar(`${currentHeuristic} applied successfully!`, {
