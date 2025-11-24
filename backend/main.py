@@ -702,37 +702,52 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
         old_threshold = state.cost_threshold
         state.cost_threshold = request.cost_threshold
         
-        # 1. Recalculate make-or-buy decisions
         decisions = []
         for idx, op in state.df_ops.iterrows():
+            # Result returns ('OUTSOURCE', cost) or None
             result = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
-            # FIX: Use a unique name 'New_Decision' to avoid merge conflicts/suffixes
+            
+            decision = 'IN_HOUSE'
+            cost = 0
+            
+            if result:
+                decision = result[0]
+                cost = result[1] # This is the estimated cost we calculated
+            
             decisions.append({
                 'Operation_ID': op['Operation_ID'], 
-                'New_Decision': result[0] if result else 'IN_HOUSE'
+                'New_Decision': decision,
+                'Estimated_Cost': cost
             })
         
         df_decisions = pd.DataFrame(decisions)
         
-        # 2. Clean Merge
-        # Drop temp column if it exists from a previous run
+        # Clean Merge
         if 'New_Decision' in state.df_ops.columns:
             state.df_ops.drop(columns=['New_Decision'], inplace=True)
+        if 'Estimated_Cost' in state.df_ops.columns:
+            state.df_ops.drop(columns=['Estimated_Cost'], inplace=True)
             
         state.df_ops = state.df_ops.merge(df_decisions, on='Operation_ID', how='left')
         
-        # 3. Update Assignments
+        # 1. Update Assignments
         state.df_ops['Assignment_Type'] = state.df_ops['New_Decision'].fillna('IN_HOUSE')
         
-        # 4. Cleanup
-        state.df_ops.drop(columns=['New_Decision'], inplace=True, errors='ignore')
-        # Optional: Drop the old 'Decision' column if it exists to keep DF clean
+        # 2. CRITICAL FIX: Update Cost if it was 0/Missing
+        # If we decided to outsource, we MUST have a cost value
+        mask_update_cost = (state.df_ops['Assignment_Type'] == 'OUTSOURCE') & \
+                           ((state.df_ops['Outsource_Cost'] <= 0) | (state.df_ops['Outsource_Cost'].isna()))
+        
+        state.df_ops.loc[mask_update_cost, 'Outsource_Cost'] = state.df_ops.loc[mask_update_cost, 'Estimated_Cost']
+        
+        # Cleanup
+        state.df_ops.drop(columns=['New_Decision', 'Estimated_Cost'], inplace=True, errors='ignore')
         if 'Decision' in state.df_ops.columns:
             state.df_ops.drop(columns=['Decision'], inplace=True, errors='ignore')
         
         new_outsourced = len(state.df_ops[state.df_ops['Assignment_Type'] == 'OUTSOURCE'])
         
-        # 5. Recompute ALL active heuristics to reflect new assignments
+        # Recompute ALL heuristics
         heuristics_to_recompute = list(state.schedules.keys())
         recomputed_metrics = {}
         
@@ -754,7 +769,7 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
         state.activity_log.append({
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'action': 'Outsourcing Policy Updated',
-            'details': f"Threshold: {old_threshold} -> {request.cost_threshold}, Outsourced: {new_outsourced}, Recomputed: {', '.join(heuristics_to_recompute)}"
+            'details': f"Threshold: {old_threshold} -> {request.cost_threshold}, Outsourced: {new_outsourced}"
         })
         
         return {
@@ -766,7 +781,6 @@ def update_outsourcing_policy(request: OutsourcingPolicyRequest):
             "metrics": recomputed_metrics
         }
     except Exception as e:
-        # Print error to console for easier debugging
         print(f"Error in update_outsourcing_policy: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Policy update failed: {str(e)}")
 @app.post("/api/ai/insights")

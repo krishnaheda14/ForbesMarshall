@@ -110,11 +110,15 @@ function OutsourcingAnalysis() {
 
   // Analyze outsourcing decisions
   const totalOps = currentSchedule.length;
+  // NEW (Fixed)
+  // 1. Identify Outsourced (Strict check)
   const outsourcedOps = currentSchedule.filter(op => 
-    op.Assignment_Type === 'OUTSOURCE' || (!op.Machine_ID && op.Outsource_Cost > 0)
+    op.Assignment_Type === 'OUTSOURCE' || op.Machine_ID === 'OUTSOURCE'
   );
+
+  // 2. Identify In-House (Must NOT be outsourced)
   const inHouseOps = currentSchedule.filter(op => 
-    op.Assignment_Type === 'IN_HOUSE' || op.Machine_ID
+    op.Assignment_Type !== 'OUTSOURCE' && op.Machine_ID !== 'OUTSOURCE'
   );
 
   const outsourcedCount = outsourcedOps.length;
