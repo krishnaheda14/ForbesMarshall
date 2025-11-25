@@ -135,6 +135,7 @@ class SchemaMapper:
             prompt = self._build_llm_prompt(columns_info, sample_rows)
             
             # Prefer using Mistral if API key is provided
+            response_text = None
             if self.mistral_api_key:
                 print(f"[SchemaMapper] Calling Mistral ({self.mistral_model}) for column mapping...")
                 try:
@@ -149,31 +150,39 @@ class SchemaMapper:
                     if resp.status_code == 200:
                         resp_json = resp.json()
                         # Try several common shapes for the generated text
-                        response_text = None
                         if isinstance(resp_json, dict):
-                            if 'results' in resp_json and isinstance(resp_json['results'], list) and len(resp_json['results'])>0:
-                                # results -> {"output": "..."} or similar
+                            # choices -> [{'content': '...'}] or similar
+                            if 'choices' in resp_json and isinstance(resp_json['choices'], list) and len(resp_json['choices']) > 0:
+                                first = resp_json['choices'][0]
+                                if isinstance(first, dict):
+                                    # common keys
+                                    for k in ('content', 'text', 'output', 'generated_text'):
+                                        if k in first and isinstance(first[k], str):
+                                            response_text = first[k]
+                                            break
+                            # results -> [{'output': '...'}]
+                            if response_text is None and 'results' in resp_json and isinstance(resp_json['results'], list) and len(resp_json['results']) > 0:
                                 first = resp_json['results'][0]
-                                response_text = first.get('output') or first.get('text') or first.get('generated_text')
-                            elif 'output' in resp_json:
-                                response_text = resp_json.get('output')
-                            elif 'generated_text' in resp_json:
-                                response_text = resp_json.get('generated_text')
-                        if response_text is None:
-                            # Fallback: try to decode any top-level string fields
-                            response_text = json.dumps(resp_json)
+                                if isinstance(first, dict):
+                                    response_text = first.get('output') or first.get('text') or first.get('generated_text')
+                                elif isinstance(first, str):
+                                    response_text = first
+                            # top-level shortcuts
+                            if response_text is None:
+                                for k in ('output', 'generated_text', 'text'):
+                                    if k in resp_json and isinstance(resp_json[k], str):
+                                        response_text = resp_json[k]
+                                        break
                     else:
                         print(f"[SchemaMapper] Mistral API returned {resp.status_code}: {resp.text}")
                         response_text = None
                 except Exception as mex:
                     print(f"[SchemaMapper] Mistral call failed: {type(mex).__name__}: {str(mex)}")
                     response_text = None
-                # If Mistral didn't return a usable response, fall back to other providers below
                 if not response_text:
                     print("[SchemaMapper] Mistral mapping failed or empty response; falling back to other providers")
-                    response_text = None
             # Use OpenRouter (Claude) if available and preferred
-            elif self.use_openrouter and self.openrouter_api_key:
+            if not response_text and self.use_openrouter and self.openrouter_api_key:
                 print("[SchemaMapper] Calling OpenRouter (Claude 3.5 Sonnet) for column mapping...")
                 response = requests.post(
                     url="https://openrouter.ai/api/v1/chat/completions",

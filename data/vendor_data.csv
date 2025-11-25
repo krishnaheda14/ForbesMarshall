@@ -1,7 +1,7 @@
 Vendor_ID,Op_Type_Specialty,Outsource_Lead_Time (Days),Outsource_Unit_Cost,Transport_Cost,Capacity_Limit,Quality_Factor
-V_Mill_Std,MILLING/DRILLING (Alum/Brass),4,$0.35,$40,8000,0.99
-V_Mill_Pro,MILLING (Titan/Steel),7,$0.65,$100,3000,0.97
-V_Turn_Std,TURNING (Alum/Steel),3,$0.25,$30,10000,0.99
-V_Turn_Pro,TURNING (Titan),6,$0.75,$80,4000,0.98
-V_Grind_Std,GRINDING (Alum/Brass),5,$0.18,$25,6000,0.995
-V_Grind_Pro,GRINDING (Steel/Brass),8,$0.55,$50,2500,0.98
+V_Mill_Std,MILLING/DRILLING (Alum/Brass),4,$8.75,$40.00,8000,0.99
+V_Mill_Pro,MILLING (Titan/Steel),7,$16.25,$100.00,3000,0.97
+V_Turn_Std,TURNING (Alum/Steel),3,$6.25,$30.00,10000,0.99
+V_Turn_Pro,TURNING (Titan),6,$18.75,$80.00,4000,0.98
+V_Grind_Std,GRINDING (Alum/Brass),5,$4.50,$25.00,6000,0.995
+V_Grind_Pro,GRINDING (Steel/Brass),8,$13.75,$50.00,2500,0.98

@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import time
 import os
+import re
 from dotenv import load_dotenv
 import google.generativeai as genai
 import requests
@@ -108,6 +109,8 @@ class AppState:
         self.schedules = {}
         self.metrics = {}
         self.current_heuristic = None
+        # Default outsourcing threshold: vendor must be below this fraction of in-house cost
+        # to be selected. Lower value -> fewer outsourcing decisions (improves in-house utilization).
         self.cost_threshold = 0.9
         self.activity_log = []
 
@@ -244,7 +247,7 @@ def load_all_data(sample_size=None):
                 })
     df_effective = pd.DataFrame(effective_times)
 
-    # Process vendor data
+    # Process vendor data (original behavior)
     df_vendors['Outsource_Unit_Cost'] = df_vendors['Outsource_Unit_Cost'].replace('[\\$,]', '', regex=True).astype(float)
     df_vendors['Transport_Cost'] = df_vendors['Transport_Cost'].replace('[\\$,]', '', regex=True).astype(float)
 
@@ -297,6 +300,39 @@ def get_ai_insights(prompt: str, context_data: Optional[Dict] = None):
 
     # Track provider attempts for debug / frontend visibility
     attempts = []
+
+    # Clean AI text output to remove Markdown and make it professional/plain text
+    def _clean_ai_text(text: Optional[str]) -> str:
+        try:
+            if text is None:
+                return ''
+            s = str(text)
+            # Remove fenced code blocks
+            s = re.sub(r'```[\s\S]*?```', '', s)
+            # Remove ATX headings (e.g., #, ##, ###)
+            s = re.sub(r'^#{1,6}\s*', '', s, flags=re.M)
+            # Remove bold/italic markers
+            s = s.replace('**', '').replace('__', '')
+            # Remove inline code ticks
+            s = re.sub(r'`([^`]*)`', r'\1', s)
+            # Remove markdown table rows
+            lines = []
+            for ln in s.splitlines():
+                if '|' in ln and re.search(r'\|', ln):
+                    continue
+                # Normalize unordered list markers
+                ln = re.sub(r'^\s*[-*+]\s*', '- ', ln)
+                lines.append(ln.rstrip())
+            s = '\n'.join(lines)
+            # Collapse multiple blank lines
+            s = re.sub(r'\n\s*\n+', '\n\n', s)
+            return s.strip()
+        except Exception:
+            return str(text or '')
+
+    def _format_response(raw_text: Optional[str], provider: Optional[str]):
+        cleaned = _clean_ai_text(raw_text)
+        return {'text': cleaned, 'provider_used': provider, 'attempts': attempts}
 
     def summarize_context(ctx):
         """Create a compact summary of context_data to avoid token limits."""
@@ -426,7 +462,7 @@ Provide 3-5 direct, actionable insights as bullet points.
                 if resp.status_code == 200:
                     text = resp.json()['choices'][0]['message']['content']
                     attempts.append({'provider': 'openrouter', 'status': 'success'})
-                    return {'text': text, 'provider_used': 'openrouter', 'attempts': attempts}
+                    return _format_response(text, 'openrouter')
                 # Token limit exceeded -> retry with short prompt
                 if resp.status_code == 402 and context_data:
                     try:
@@ -440,7 +476,7 @@ Provide 3-5 direct, actionable insights as bullet points.
                         if retry.status_code == 200:
                             text = retry.json()['choices'][0]['message']['content']
                             attempts.append({'provider': 'openrouter', 'status': 'retry_success', 'note': 'short_prompt'})
-                            return {'text': text, 'provider_used': 'openrouter', 'attempts': attempts}
+                            return _format_response(text, 'openrouter')
                     except Exception:
                         pass
                 # Otherwise try Mistral then Gemini
@@ -450,7 +486,7 @@ Provide 3-5 direct, actionable insights as bullet points.
                     try:
                         mtxt = call_mistral(short_prompt if context_data else full_prompt)
                         attempts.append({'provider': 'mistral', 'status': 'success'})
-                        return {'text': mtxt, 'provider_used': 'mistral', 'attempts': attempts}
+                        return _format_response(mtxt, 'mistral')
                     except Exception as me:
                         attempts.append({'provider': 'mistral', 'status': 'error', 'message': str(me)[:200]})
                         last_err += f"; Mistral failed: {str(me)[:200]}"
@@ -458,45 +494,45 @@ Provide 3-5 direct, actionable insights as bullet points.
                     try:
                         gm = gemini_model.generate_content(short_prompt if context_data else full_prompt)
                         attempts.append({'provider': 'gemini', 'status': 'success'})
-                        return {'text': gm.text, 'provider_used': 'gemini', 'attempts': attempts}
+                        return _format_response(gm.text, 'gemini')
                     except Exception as ge:
                         attempts.append({'provider': 'gemini', 'status': 'error', 'message': str(ge)[:200]})
                         last_err += f"; Gemini failed: {str(ge)[:200]}"
-                return {'text': last_err, 'provider_used': None, 'attempts': attempts}
+                return _format_response(last_err, None)
 
         # 2) Mistral primary
         if AI_PROVIDER == 'mistral':
             try:
                 mtxt = call_mistral(full_prompt)
                 attempts.append({'provider': 'mistral', 'status': 'success'})
-                return {'text': mtxt, 'provider_used': 'mistral', 'attempts': attempts}
+                return _format_response(mtxt, 'mistral')
             except Exception as me:
                 attempts.append({'provider': 'mistral', 'status': 'error', 'message': str(me)[:200]})
                 if GEMINI_API_KEY and gemini_model:
                     try:
                         gm = gemini_model.generate_content(short_prompt if context_data else full_prompt)
                         attempts.append({'provider': 'gemini', 'status': 'success'})
-                        return {'text': gm.text, 'provider_used': 'gemini', 'attempts': attempts}
+                        return _format_response(gm.text, 'gemini')
                     except Exception as ge:
                         attempts.append({'provider': 'gemini', 'status': 'error', 'message': str(ge)[:200]})
-                        return {'text': f"Mistral failed: {str(me)[:200]}; Gemini failed: {str(ge)[:200]}", 'provider_used': None, 'attempts': attempts}
-                return {'text': f"Mistral failed: {str(me)}", 'provider_used': None, 'attempts': attempts}
+                        return _format_response(f"Mistral failed: {str(me)[:200]}; Gemini failed: {str(ge)[:200]}", None)
+                return _format_response(f"Mistral failed: {str(me)}", None)
 
         # 3) Gemini primary
         if AI_PROVIDER == 'gemini':
             if not gemini_model:
                 attempts.append({'provider': 'gemini', 'status': 'unconfigured'})
-                return {'text': "AI insights unavailable: No valid API keys configured", 'provider_used': None, 'attempts': attempts}
+                return _format_response("AI insights unavailable: No valid API keys configured", None)
             response = gemini_model.generate_content(short_prompt if context_data else full_prompt)
             attempts.append({'provider': 'gemini', 'status': 'success'})
-            return {'text': response.text, 'provider_used': 'gemini', 'attempts': attempts}
+            return _format_response(response.text, 'gemini')
 
     except Exception as e:
         em = str(e)
         attempts.append({'provider': 'internal', 'status': 'error', 'message': em[:300]})
         if "API_KEY_INVALID" in em or "API key not valid" in em:
-            return {'text': "⚠️ API key invalid or expired. Please update your AI keys in the environment.", 'provider_used': None, 'attempts': attempts}
-        return {'text': f"Error generating AI insights: {em}", 'provider_used': None, 'attempts': attempts}
+            return _format_response("⚠️ API key invalid or expired. Please update your AI keys in the environment.", None)
+        return _format_response(f"Error generating AI insights: {em}", None)
 
 # API Endpoints
 
@@ -1388,7 +1424,7 @@ def analyze_hourly_cost(request: dict):
                 op_inhouse_cost = (op['Total_Proc_Min'] / 60) * rate
                 op_outsource_cost = op.get('Outsource_Cost', 0)
                 
-                # Outsource if vendor cost < 85% of in-house cost
+                # Outsource if vendor cost < 85% of in-house cost (original rule)
                 if op_outsource_cost > 0 and op_outsource_cost < (op_inhouse_cost * 0.85):
                     outsourced_ops_list.append(op)
                     outsource_cost += op_outsource_cost

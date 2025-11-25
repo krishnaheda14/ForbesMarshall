@@ -62,6 +62,7 @@ function ExcelUpload() {
   const [mappings, setMappings] = useState({});
   const [availableFields, setAvailableFields] = useState([]);
   
+  
   // Step 3: Results
   const [transformResult, setTransformResult] = useState(null);
   const [scheduleResult, setScheduleResult] = useState(null);
@@ -113,7 +114,7 @@ function ExcelUpload() {
       const response = await axios.post(`${API_BASE}/api/excel/auto-map`, formData);
       
       console.log('Auto-map response:', response.data);
-      
+
       const mappingData = response.data.mappings;
       console.log('Mapping data:', mappingData);
       
@@ -542,6 +543,7 @@ function ExcelUpload() {
               </TableBody>
             </Table>
           </TableContainer>
+          
           
           <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Typography variant="h6" gutterBottom sx={{ mt: 2 }}>
