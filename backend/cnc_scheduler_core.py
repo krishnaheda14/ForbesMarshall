@@ -65,46 +65,32 @@ def calculate_inhouse_cost(operation, df_effective, hourly_rate=30):
     return total_cost, best_option['Machine_ID']
 
 def make_or_buy_decision(operation, df_effective, threshold=0.9):
-    """
-    Make-or-buy decision.
-    Outsources ONLY if:
-    1. It meets the cost threshold
-    2. AND the vendor can deliver before the Due Date
-    """
+    """Make-or-buy decision for an operation"""
     if operation.get('Outsource_Flag') != 'Y':
         return None
         
     result = calculate_inhouse_cost(operation, df_effective)
-    # If we physically can't do it in-house (no machine), we MUST outsource regardless of time
     if not result or result[0] is None:
-        return ('OUTSOURCE', operation.get('Outsource_Cost', 0))
+        # Force outsource
+        cost = float(operation.get('Outsource_Cost', 0) or 0)
+        # Fallback estimate: Time * $50/hr + $50 Setup
+        if cost <= 0.1:
+            proc_min = float(operation.get('Total_Proc_Min', 60))
+            cost = (proc_min / 60 * 50.0) + 50.0
+        return ('OUTSOURCE', cost)
     
     inhouse_cost, _ = result
-    outsource_cost = operation.get('Outsource_Cost', float('inf'))
+    outsource_cost = float(operation.get('Outsource_Cost', 0) or 0)
     
-    # Data Fix
-    if outsource_cost <= 0:
+    # Fix missing data
+    if outsource_cost <= 0.1:
         outsource_cost = inhouse_cost * 1.2 
     
-    # 1. Check Cost
-    is_cost_effective = outsource_cost < (inhouse_cost * threshold)
-    
-    # 2. Check Time (The Fix)
-    # Vendor time includes shipping/lead time (often days)
-    # In-house time is just processing + setup (often hours)
-    outsource_time = operation.get('Outsource_Time_Min', float('inf'))
-    release_time = operation.get('Release_Time_Min', 0)
-    due_time = operation.get('Due_Time_Min', float('inf'))
-    
-    # Will outsourcing miss the deadline?
-    will_be_late = (release_time + outsource_time) > due_time
-    
-    # DECISION LOGIC:
-    # If it's cost effective AND won't be late -> Outsource
-    if is_cost_effective and not will_be_late:
+    if outsource_cost < (inhouse_cost * threshold):
         return ('OUTSOURCE', outsource_cost)
         
     return None
+
 def get_setup_penalty(prev_material, next_material, df_penalties):
     """Get setup penalty for material changeover"""
     if not prev_material or not next_material:
@@ -129,29 +115,15 @@ def calculate_metrics(schedule_df, df_ops, heuristic_name='SPT'):
     total_ops = len(schedule_df)
     on_time_pct = ((total_ops - late_ops) / total_ops * 100) if total_ops > 0 else 0
     
-    # FIX: Use actual scheduled processing time (End_Time - Start_Time - Setup - Transfer)
-    # NOT the merged Total_Proc_Min which may be original data before speed_factor adjustment
-    # For in-house ops: Proc_Time from schedule is the effective proc time
-    # For outsourced ops: use the scheduled window duration
-    in_house_ops = schedule_df[schedule_df['Machine_ID'] != 'OUTSOURCE']
-    if len(in_house_ops) > 0:
-        # Use scheduled Proc_Time for in-house (already effective time from scheduler)
-        total_proc = in_house_ops['Proc_Time'].sum()
-        num_machines = in_house_ops['Machine_ID'].nunique()
-        total_avail = schedule_df['End_Time'].max() * num_machines
-        utilization = (total_proc / total_avail * 100) if total_avail > 0 else 0
-    else:
-        utilization = 0
+    total_proc = schedule_df['Proc_Time'].sum()
+    num_machines = schedule_df['Machine_ID'].nunique()
+    total_avail = schedule_df['End_Time'].max() * num_machines
+    utilization = (total_proc / total_avail * 100) if total_avail > 0 else 0
     
-    # Cost: use Total_Proc_Min if available (original data), fallback to scheduled Proc_Time
-    if 'Total_Proc_Min' in schedule_df.columns:
-        total_cost = (schedule_df['Total_Proc_Min'].sum() / 60 * 30)
-    else:
-        total_cost = (schedule_df['Proc_Time'].sum() / 60 * 30)
-    
-    # Add outsource cost if present
-    if 'Outsource_Cost' in schedule_df.columns:
-        total_cost += schedule_df['Outsource_Cost'].sum()
+    # Cost Calculation (In-House + Outsourced)
+    in_house_cost = (schedule_df[schedule_df['Machine_ID'] != 'OUTSOURCE']['Proc_Time'].sum() / 60 * 30)
+    outsource_cost = schedule_df[schedule_df['Machine_ID'] == 'OUTSOURCE']['Outsource_Cost'].sum()
+    total_cost = in_house_cost + outsource_cost
     
     return {
         'Heuristic': heuristic_name,
@@ -304,7 +276,7 @@ class CNCScheduler:
             'Tardiness': max(0, end_time - operation.get('Due_Time_Min', 0)),
             'Priority': int(operation.get('Priority', 3)),
             'Assignment_Type': 'IN_HOUSE',
-            'Outsource_Cost': 0  # In-house cost handled separately, placeholder
+            'Outsource_Cost': 0
         })
 
         self.machine_availability[machine_id] = end_time
@@ -331,13 +303,12 @@ class CNCScheduler:
     def run_scheduling(self, heuristic='SPT', verbose=False):
         self.reset()
         
-        # 1. Handle Outsourced Operations First
-        # Support missing `Assignment_Type` column: treat missing values as 'IN_HOUSE'
         if 'Assignment_Type' in self.df_ops.columns:
             assign_col = self.df_ops['Assignment_Type'].fillna('IN_HOUSE')
         else:
             assign_col = pd.Series(['IN_HOUSE'] * len(self.df_ops), index=self.df_ops.index)
 
+        # 1. Handle Outsourced
         outsourced_ops = self.df_ops[assign_col == 'OUTSOURCE']
         for _, op in outsourced_ops.iterrows():
             outsource_time = op.get('Outsource_Time_Min', op.get('Total_Proc_Min', 0))
@@ -346,25 +317,36 @@ class CNCScheduler:
             
             self.op_completion_times[op['Operation_ID']] = completion
             
-            # Added Outsource_Cost here
+            # --- ULTIMATE COST FIX ---
+            final_cost = float(op.get('Outsource_Cost', 0) or 0)
+            if final_cost <= 0.1:
+                # Estimate 1: Benchmark In-House
+                inhouse_res = calculate_inhouse_cost(op, self.df_effective)
+                if inhouse_res and inhouse_res[0]:
+                    final_cost = inhouse_res[0] * 1.2
+                else:
+                    # Estimate 2: Last Resort (Time * Rate)
+                    proc_min = float(op.get('Total_Proc_Min', 60))
+                    final_cost = (proc_min / 60 * 50.0) + 50 # $50/hr + Setup
+            # -------------------------
+
             self.schedule.append({
                 'Operation_ID': op['Operation_ID'],
                 'Job_ID': op['Job_ID'],
                 'Machine_ID': 'OUTSOURCE',
                 'Start_Time': release_time,
                 'End_Time': completion,
-                'Setup_Time': op.get('Setup_Time', 0),
-                'Proc_Time': op.get('Total_Proc_Min', 0),
-                'Transfer_Time': op.get('Transfer_Min', 0),
+                'Setup_Time': 0,
+                'Proc_Time': 0,
+                'Transfer_Time': 0,
                 'Due_Time': op.get('Due_Time_Min', 0),
                 'Tardiness': max(0, completion - op.get('Due_Time_Min', 0)),
                 'Priority': int(op.get('Priority', 3)),
                 'Assignment_Type': 'OUTSOURCE',
-                'Outsource_Cost': float(op.get('Outsource_Cost', 0)) # <--- CRITICAL FIX
+                'Outsource_Cost': final_cost
             })
 
-        # 2. Schedule In-House Operations
-        # Non-outsourced operations (respect missing column as IN_HOUSE)
+        # 2. In-House
         non_outsourced = self.df_ops[assign_col != 'OUTSOURCE']
         operations_count = len(non_outsourced)
         scheduled_ops_set = set()
@@ -387,25 +369,34 @@ class CNCScheduler:
             best_machine, best_completion = self.find_best_machine(next_op, earliest_start_time)
             
             if best_machine is None:
-                # Force outsource if no machine found
+                # Force outsource fallback
                 outsource_time = next_op.get('Total_Proc_Min', 0)
                 release_time = next_op.get('Release_Time_Min', 0)
                 
-                # Added Outsource_Cost here too
+                # --- SAME COST FIX FOR FALLBACK ---
+                final_cost = float(next_op.get('Outsource_Cost', 0) or 0)
+                if final_cost <= 0.1:
+                    inhouse_res = calculate_inhouse_cost(next_op, self.df_effective)
+                    if inhouse_res and inhouse_res[0]:
+                        final_cost = inhouse_res[0] * 1.2
+                    else:
+                        proc_min = float(next_op.get('Total_Proc_Min', 60))
+                        final_cost = (proc_min / 60 * 50.0) + 50
+
                 self.schedule.append({
                     'Operation_ID': next_op['Operation_ID'],
                     'Job_ID': next_op['Job_ID'],
                     'Machine_ID': 'OUTSOURCE',
                     'Start_Time': release_time,
                     'End_Time': release_time + outsource_time,
-                    'Setup_Time': next_op.get('Setup_Time', 0),
-                    'Proc_Time': next_op.get('Total_Proc_Min', 0),
-                    'Transfer_Time': next_op.get('Transfer_Min', 0),
+                    'Setup_Time': 0,
+                    'Proc_Time': 0,
+                    'Transfer_Time': 0,
                     'Due_Time': next_op.get('Due_Time_Min', 0),
                     'Tardiness': 0,
                     'Priority': int(next_op.get('Priority', 3)),
                     'Assignment_Type': 'OUTSOURCE',
-                    'Outsource_Cost': float(next_op.get('Outsource_Cost', 0)) # <--- CRITICAL FIX
+                    'Outsource_Cost': final_cost
                 })
                 self.op_completion_times[next_op['Operation_ID']] = release_time + outsource_time
                 scheduled_ops_set.add(next_op['Operation_ID'])

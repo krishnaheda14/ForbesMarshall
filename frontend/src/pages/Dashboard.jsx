@@ -62,7 +62,7 @@ function Dashboard() {
   const [deleteJobDialogOpen, setDeleteJobDialogOpen] = useState(false);
   const [jobToDelete, setJobToDelete] = useState('');
   
-  // UPDATED: Default priority is now 3
+  // Default priority is 3 (Low/Normal)
   const [newJob, setNewJob] = useState({
     job_id: '',
     operations: [
@@ -74,7 +74,7 @@ function Dashboard() {
         quantity: 1,
         release_day: 0,
         due_day: 10,
-        priority: 3, // <--- Changed default to Number 3
+        priority: 3, 
         vendor_ref: 'V1',
         outsource_cost: 0,
       }
@@ -248,7 +248,7 @@ function Dashboard() {
           quantity: 1,
           release_day: 0,
           due_day: 10,
-          priority: 3, // New operations default to 3
+          priority: 3, 
           vendor_ref: 'V1',
           outsource_cost: 0,
         }
@@ -470,7 +470,7 @@ function Dashboard() {
                       <TextField fullWidth size="small" type="number" label="Processing Time (min)" value={op.proc_time} onChange={(e) => updateOperation(index, 'proc_time', Number(e.target.value))} />
                     </Grid>
                     
-                    {/* UPDATED PRIORITY SELECTION - NUMBERS ONLY */}
+                    {/* UPDATED PRIORITY SELECTION - 3 Options Only */}
                     <Grid item xs={12} sm={4}>
                       <FormControl fullWidth size="small">
                         <InputLabel>Priority</InputLabel>
@@ -479,10 +479,9 @@ function Dashboard() {
                           onChange={(e) => updateOperation(index, 'priority', e.target.value)}
                           label="Priority"
                         >
-                          <MenuItem value={1}>1 (Highest)</MenuItem>
-                          <MenuItem value={2}>2 (High)</MenuItem>
-                          <MenuItem value={3}>3 (Medium)</MenuItem>
-                          <MenuItem value={4}>4 (Low)</MenuItem>
+                          <MenuItem value={1}>1 (High)</MenuItem>
+                          <MenuItem value={2}>2 (Medium)</MenuItem>
+                          <MenuItem value={3}>3 (Low)</MenuItem>
                         </Select>
                       </FormControl>
                     </Grid>

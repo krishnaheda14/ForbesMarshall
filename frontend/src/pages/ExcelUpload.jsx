@@ -927,7 +927,7 @@ function ExcelUpload() {
 
           {/* Action Buttons */}
           <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', mt: 3 }}>
-            <Button
+            {/* <Button
               variant="contained"
               startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
               onClick={handleComputeAllHeuristics}
@@ -935,9 +935,9 @@ function ExcelUpload() {
               sx={{ backgroundColor: '#6366f1', '&:hover': { backgroundColor: '#4f46e5' } }}
             >
               Compute All Heuristics
-            </Button>
+            </Button> */}
 
-            <Button
+            {/* <Button
               variant="contained"
               startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <AIIcon />}
               onClick={handleGetAIInsights}
@@ -945,7 +945,7 @@ function ExcelUpload() {
               sx={{ backgroundColor: '#ec4899', '&:hover': { backgroundColor: '#db2777' } }}
             >
               AI Insights & Comparison
-            </Button>
+            </Button> */}
 
             <Button
               variant="outlined"

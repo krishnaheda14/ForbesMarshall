@@ -302,8 +302,7 @@ function CostAnalysis() {
                   <MenuItem value="EDD">EDD - Earliest Due Date</MenuItem>
                   <MenuItem value="CR">CR - Critical Ratio</MenuItem>
                   <MenuItem value="PRIORITY">PRIORITY - Priority Based</MenuItem>
-                  <MenuItem value="WEIGHTED">WEIGHTED - Balanced Multi-Objective</MenuItem>
-                  <MenuItem value="SLACK">SLACK - Minimum Slack Time</MenuItem>
+                  
                 </Select>
               </FormControl>
             </Grid>
