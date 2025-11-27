@@ -285,18 +285,57 @@ class CNCScheduler:
         return True
 
     def select_next_operation(self, available_ops, heuristic='SPT'):
-        def safe_priority(op): return int(op.get('Priority', 3))
+        """
+        Select next operation based on specific user-defined rules:
+        - SPT: Processing Time -> Priority
+        - EDD: Due Date -> Priority
+        - CR:  Critical Ratio -> Priority
+        - PRIORITY: Priority -> Due Date (Tie-breaker)
+        """
         
+        # Helper to get priority safely (1=Highest, 4=Lowest)
+        def safe_priority(op): 
+            return int(op.get('Priority', 3))
+
         if heuristic == 'SPT':
-            op, earliest_start = min(available_ops, key=lambda x: (safe_priority(x[0]), x[0]['Total_Proc_Min']))
+            # 1. Shortest Processing Time  2. Priority
+            op, earliest_start = min(
+                available_ops, 
+                key=lambda x: (x[0]['Total_Proc_Min'], safe_priority(x[0]))
+            )
+
         elif heuristic == 'EDD':
-            op, earliest_start = min(available_ops, key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min']))
+            # 1. Earliest Due Date  2. Priority
+            op, earliest_start = min(
+                available_ops, 
+                key=lambda x: (x[0]['Due_Time_Min'], safe_priority(x[0]))
+            )
+
         elif heuristic == 'CR':
-            op, earliest_start = min(available_ops, key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'] / max(x[0]['Total_Proc_Min'], 1)))
+            # 1. Critical Ratio  2. Priority
+            # CR = (Due Time - Current Time) / Processing Time
+            # We use (Due - Release) as a proxy for availability time in static selection
+            op, earliest_start = min(
+                available_ops, 
+                key=lambda x: (
+                    (x[0]['Due_Time_Min'] - x[1]) / max(x[0]['Total_Proc_Min'], 1), 
+                    safe_priority(x[0])
+                )
+            )
+
         elif heuristic == 'PRIORITY':
-            op, earliest_start = min(available_ops, key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min']))
+            # 1. Priority  2. Due Date (Necessary tie-breaker)
+            op, earliest_start = min(
+                available_ops, 
+                key=lambda x: (safe_priority(x[0]), x[0]['Due_Time_Min'])
+            )
+
         else:
-            op, earliest_start = min(available_ops, key=lambda x: (x[0]['Total_Proc_Min'], x[0]['Due_Time_Min']))
+            # Default fallback (SPT)
+            op, earliest_start = min(
+                available_ops, 
+                key=lambda x: (x[0]['Total_Proc_Min'], safe_priority(x[0]))
+            )
 
         return op, earliest_start
 
