@@ -147,7 +147,10 @@ function MachineryControls() {
                 value={machineId}
                 onChange={(e) => setMachineId(e.target.value)}
                 InputLabelProps={{ style: { color: 'rgba(255,255,255,0.7)' } }}
-                InputProps={{ style: { color: 'white' } }}
+                InputProps={{ 
+                  style: { color: 'white' },
+                  inputProps: { style: { color: 'white' } }
+                }}
               />
             </Grid>
 
@@ -166,10 +169,11 @@ function MachineryControls() {
                   else if (breakdownStart > max) setBreakdownStart(max);
                 }}
                 helperText="Minutes (5000 - 100000)"
-                inputProps={{ min: 5000, max: 100000, step: 1 }}
+                inputProps={{ min: 5000, max: 100000, step: 1, style: { color: 'white' } }}
                 InputProps={{
                   endAdornment: <InputAdornment position="end">min</InputAdornment>,
-                  style: { color: 'white' }
+                  style: { color: 'white' },
+                  inputProps: { style: { color: 'white' } }
                 }}
               />
             </Grid>
@@ -188,10 +192,11 @@ function MachineryControls() {
                   else if (breakdownDuration > max) setBreakdownDuration(max);
                 }}
                 helperText="Minutes (100 - 5000)"
-                inputProps={{ min: 100, max: 5000, step: 1 }}
+                inputProps={{ min: 100, max: 5000, step: 1, style: { color: 'white' } }}
                 InputProps={{
                   endAdornment: <InputAdornment position="end">min</InputAdornment>,
-                  style: { color: 'white' }
+                  style: { color: 'white' },
+                  inputProps: { style: { color: 'white' } }
                 }}
               />
             </Grid>
@@ -232,7 +237,10 @@ function MachineryControls() {
             onChange={(e) => setJobId(e.target.value)}
             sx={{ mb: 1.5 }}
             InputLabelProps={{ style: { color: 'rgba(255,255,255,0.7)' } }}
-            InputProps={{ style: { color: 'white' } }}
+            InputProps={{ 
+              style: { color: 'white' },
+              inputProps: { style: { color: 'white' } }
+            }}
           />
           <Typography variant="caption" gutterBottom>
             Priority: {priority} (1=Highest, 3=Lowest)

@@ -31,6 +31,8 @@ import {
   CheckCircle as CheckIcon,
   Warning as WarningIcon,
   History as HistoryIcon,
+  TrendingUp as CapexIcon,
+  Assessment as AssessmentIcon,
 } from '@mui/icons-material';
 
 import HeuristicSelector from './HeuristicSelector';
@@ -48,6 +50,8 @@ const menuItems = [
   { text: 'Operations', icon: <OperationsIcon />, path: '/operations' },
   { text: 'Cost Analysis', icon: <CostIcon />, path: '/cost-analysis' },
   { text: 'Outsourcing', icon: <FactoryIcon />, path: '/outsourcing' },
+  { text: 'CapEx Analysis', icon: <CapexIcon />, path: '/capex' },
+  { text: 'Machine ROI', icon: <AssessmentIcon />, path: '/machine-roi' },
   { text: 'Activity Log', icon: <HistoryIcon />, path: '/activity-log' },
   { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
 ];

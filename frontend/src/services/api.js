@@ -193,4 +193,15 @@ export const getActivityLog = async () => {
   return response.data;
 };
 
+// Machine Management
+export const addMachine = async (machineData) => {
+  const response = await api.post('/api/machines/add', machineData);
+  return response.data;
+};
+
+export const removeMachine = async (machineId) => {
+  const response = await api.post('/api/machines/remove', { machine_id: machineId });
+  return response.data;
+};
+
 export default api;

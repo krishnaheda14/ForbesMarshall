@@ -132,20 +132,27 @@ function Comparison() {
     );
   }
 
-  // Find best heuristic for each metric
+  // Find best heuristic for each metric (return all tied winners)
   const findBest = (metricKey, minimize = true) => {
     let bestValue = minimize ? Infinity : -Infinity;
-    let bestHeuristic = '';
+    const bestHeuristics = [];
 
     metricsArray.forEach((m) => {
       const value = m[metricKey] || 0;
       if (minimize ? value < bestValue : value > bestValue) {
         bestValue = value;
-        bestHeuristic = m.Heuristic;
       }
     });
 
-    return bestHeuristic;
+    // Collect all heuristics that match the best value
+    metricsArray.forEach((m) => {
+      const value = m[metricKey] || 0;
+      if (value === bestValue) {
+        bestHeuristics.push(m.Heuristic);
+      }
+    });
+
+    return bestHeuristics;
   };
 
   const bestMakespan = findBest('Makespan_Days', true);
@@ -248,9 +255,9 @@ function Comparison() {
                       <Box
                         sx={{
                           fontWeight:
-                            metric.Heuristic === bestMakespan ? 'bold' : 'normal',
+                            bestMakespan.includes(metric.Heuristic) ? 'bold' : 'normal',
                           color:
-                            metric.Heuristic === bestMakespan ? '#10b981' : 'inherit',
+                            bestMakespan.includes(metric.Heuristic) ? '#10b981' : 'inherit',
                         }}
                       >
                         {metric.Makespan_Days || 0}
@@ -260,9 +267,9 @@ function Comparison() {
                       <Box
                         sx={{
                           fontWeight:
-                            metric.Heuristic === bestTardiness ? 'bold' : 'normal',
+                            bestTardiness.includes(metric.Heuristic) ? 'bold' : 'normal',
                           color:
-                            metric.Heuristic === bestTardiness ? '#10b981' : 'inherit',
+                            bestTardiness.includes(metric.Heuristic) ? '#10b981' : 'inherit',
                         }}
                       >
                         {metric.Total_Tardiness_Days || 0}
@@ -275,9 +282,9 @@ function Comparison() {
                       <Box
                         sx={{
                           fontWeight:
-                            metric.Heuristic === bestOnTime ? 'bold' : 'normal',
+                            bestOnTime.includes(metric.Heuristic) ? 'bold' : 'normal',
                           color:
-                            metric.Heuristic === bestOnTime ? '#10b981' : 'inherit',
+                            bestOnTime.includes(metric.Heuristic) ? '#10b981' : 'inherit',
                         }}
                       >
                         {metric['On_Time_%'] || 0}%
@@ -287,9 +294,9 @@ function Comparison() {
                       <Box
                         sx={{
                           fontWeight:
-                            metric.Heuristic === bestUtilization ? 'bold' : 'normal',
+                            bestUtilization.includes(metric.Heuristic) ? 'bold' : 'normal',
                           color:
-                            metric.Heuristic === bestUtilization ? '#10b981' : 'inherit',
+                            bestUtilization.includes(metric.Heuristic) ? '#10b981' : 'inherit',
                         }}
                       >
                         {metric['Machine_Utilization_%'] || 0}%
@@ -299,9 +306,9 @@ function Comparison() {
                       <Box
                         sx={{
                           fontWeight:
-                            metric.Heuristic === bestCost ? 'bold' : 'normal',
+                            bestCost.includes(metric.Heuristic) ? 'bold' : 'normal',
                           color:
-                            metric.Heuristic === bestCost ? '#10b981' : 'inherit',
+                            bestCost.includes(metric.Heuristic) ? '#10b981' : 'inherit',
                         }}
                       >
                         ${(metric['Total_Cost_$'] || 0).toFixed(2)}

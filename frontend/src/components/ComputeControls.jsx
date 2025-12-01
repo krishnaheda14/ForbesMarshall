@@ -70,22 +70,18 @@ function ComputeControls() {
   const handleComputeAll = async () => {
     try {
       setLoading(true);
+      const startTime = Date.now();
       setComputeProgress({
         active: true,
-        current: 'Initializing...',
+        current: 'Computing all heuristics...',
         completed: [],
         total: HEURISTICS.length,
-        startTime: Date.now()
+        startTime: startTime
       });
       
       enqueueSnackbar('Starting computation of all heuristics...', { variant: 'info' });
       
       const result = await computeAllHeuristics();
-      
-      setComputeProgress(prev => ({
-        ...prev,
-        current: 'Finalizing results...',
-      }));
       
       // result.results has structure { HEUR: { schedule_size, metrics } }
       if (result && result.results) {
@@ -96,7 +92,7 @@ function ComputeControls() {
         setMetrics(metricsObj);
       }
       
-      const finalElapsed = ((Date.now() - computeProgress.startTime) / 1000).toFixed(1);
+      const finalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       
       setComputeProgress({
         active: false,
@@ -189,15 +185,14 @@ function ComputeControls() {
           <Box sx={{ mb: 1 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
               <Typography variant="caption" sx={{ color: 'white', fontWeight: 600 }}>
-                Computing: {computeProgress.current}
+                {computeProgress.current}
               </Typography>
               <Typography variant="caption" sx={{ color: 'white', opacity: 0.8 }}>
                 {computeProgress.completed.length}/{computeProgress.total}
               </Typography>
             </Box>
             <LinearProgress 
-              variant="determinate" 
-              value={(computeProgress.completed.length / computeProgress.total) * 100}
+              variant="indeterminate"
               sx={{
                 height: 6,
                 borderRadius: 3,
@@ -212,8 +207,7 @@ function ComputeControls() {
           <List dense sx={{ py: 0 }}>
             {HEURISTICS.map((h) => {
               const isCompleted = computeProgress.completed.includes(h.name);
-              const isCurrent = computeProgress.current === h.name;
-              const isPending = !isCompleted && !isCurrent;
+              const isPending = !isCompleted && computeProgress.active;
               
               return (
                 <ListItem 
@@ -227,7 +221,6 @@ function ComputeControls() {
                 >
                   <ListItemIcon sx={{ minWidth: 28 }}>
                     {isCompleted && <DoneIcon sx={{ fontSize: 16, color: '#10b981' }} />}
-                    {isCurrent && <CurrentIcon sx={{ fontSize: 16, color: '#3b82f6' }} />}
                     {isPending && <PendingIcon sx={{ fontSize: 16, color: 'rgba(255,255,255,0.3)' }} />}
                   </ListItemIcon>
                   <ListItemText 
@@ -235,7 +228,7 @@ function ComputeControls() {
                     secondary={h.label}
                     primaryTypographyProps={{ 
                       variant: 'caption', 
-                      sx: { color: 'white', fontWeight: isCurrent ? 600 : 400 }
+                      sx: { color: 'white', fontWeight: 400 }
                     }}
                     secondaryTypographyProps={{ 
                       variant: 'caption', 

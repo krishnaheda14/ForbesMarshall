@@ -30,7 +30,7 @@ from cnc_scheduler_core import (
     calculate_metrics,
     analyze_capacity_for_new_job
 )
-from core.cp_sat_scheduler import solve_with_cpsat
+# from core.cp_sat_scheduler import solve_with_cpsat
 
 # Import new Excel ingestion modules
 from excel_ingestion import ExcelIngestor, normalize_column_names
@@ -154,6 +154,23 @@ class NewJobRequest(BaseModel):
 class AIInsightRequest(BaseModel):
     prompt: str
     context_data: Optional[Dict[str, Any]] = None
+
+class BuyMachineRequest(BaseModel):
+    machine_id: str  # ID of the machine to clone
+    hourly_labor_rate: Optional[float] = 30.0  # $/hr for labor cost calculation
+
+class AddMachineRequest(BaseModel):
+    machine_id: str
+    machine_type: str
+    op_types: str  # Comma-separated list of Op_Types
+    speed_factor: float = 1.0
+    hourly_rate: float = 30.0
+    maintenance_cost: float = 100.0
+    energy_cost_per_hour: float = 10.0
+    purchase_price: Optional[float] = 50000.0
+
+class RemoveMachineRequest(BaseModel):
+    machine_id: str
 
 # Helper functions
 def load_all_data(sample_size=None):
@@ -539,6 +556,72 @@ Provide 3-5 direct, actionable insights as bullet points.
 @app.get("/")
 def read_root():
     return {"message": "CNC Scheduling API v2.0", "status": "running"}
+
+@app.get("/api/health")
+def health_check():
+    """Health check endpoint with system status"""
+    return {
+        "status": "healthy",
+        "version": "2.0",
+        "ai_enabled": AI_ENABLED,
+        "ai_provider": AI_PROVIDER,
+        "data_loaded": state.df_ops is not None,
+        "machines_count": len(state.df_machines) if state.df_machines is not None else 0,
+        "operations_count": len(state.df_ops) if state.df_ops is not None else 0,
+        "current_heuristic": state.current_heuristic,
+        "available_heuristics": ["SPT", "EDD", "CR", "PRIORITY"]
+    }
+
+@app.get("/api/endpoints")
+def list_endpoints():
+    """List all available API endpoints"""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, 'methods'):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": route.name
+            })
+    
+    # Group by category
+    categories = {
+        "Data Management": [],
+        "Scheduling": [],
+        "Analysis": [],
+        "CapEx": [],
+        "AI & Insights": [],
+        "Excel Ingestion": [],
+        "Operations": [],
+        "Debug": [],
+        "Other": []
+    }
+    
+    for route in routes:
+        path = route["path"]
+        if "/api/data/" in path:
+            categories["Data Management"].append(route)
+        elif "/api/schedule/" in path:
+            categories["Scheduling"].append(route)
+        elif "/api/analysis/" in path:
+            categories["Analysis"].append(route)
+        elif "/api/capex/" in path:
+            categories["CapEx"].append(route)
+        elif "/api/ai/" in path:
+            categories["AI & Insights"].append(route)
+        elif "/api/excel/" in path:
+            categories["Excel Ingestion"].append(route)
+        elif "/api/job/" in path or "/api/machine/" in path or "/api/outsourcing/" in path:
+            categories["Operations"].append(route)
+        elif "/api/debug/" in path:
+            categories["Debug"].append(route)
+        else:
+            categories["Other"].append(route)
+    
+    return {
+        "total_endpoints": len(routes),
+        "categories": categories
+    }
 
 @app.post("/api/data/load")
 async def load_data(request: LoadDataRequest = Body(default=LoadDataRequest(sample_size=None))):
@@ -1045,6 +1128,61 @@ def apply_heuristic(request: ApplyHeuristicRequest):
             except Exception:
                 schedule_df['Release'] = schedule_df.get('Release_Time_Min', schedule_df.get('Release_Time', None))
                 schedule_df['Release_Time'] = schedule_df['Release']
+            # Ensure outsourced operations carry a valid Outsource_Cost by attempting
+            # to compute it from vendor table if the merged value is missing or zero.
+            try:
+                if 'Outsource_Cost' in schedule_df.columns and state.df_vendors is not None:
+                    # build a mapping for quick lookup
+                    vend = state.df_vendors.copy()
+                    # normalize vendor id column name if needed
+                    if 'Vendor_ID' in vend.columns:
+                        vend_map = vend.set_index('Vendor_ID').to_dict('index')
+                    else:
+                        vend_map = {}
+
+                    def _compute_vendor_cost(row):
+                        try:
+                            if str(row.get('Assignment_Type','')).upper() != 'OUTSOURCE':
+                                return row.get('Outsource_Cost', 0)
+                            existing = row.get('Outsource_Cost', None)
+                            if existing and float(existing) > 0.01:
+                                return existing
+                            # lookup vendor_ref from state.df_ops
+                            opid = row.get('Operation_ID')
+                            ref = None
+                            try:
+                                ref = state.df_ops.loc[state.df_ops['Operation_ID'] == opid, 'Vendor_Ref']
+                                if ref is not None and len(ref) > 0:
+                                    ref = str(ref.values[0])
+                                else:
+                                    ref = None
+                            except Exception:
+                                ref = None
+
+                            if not ref or ref not in vend_map:
+                                return existing if existing is not None else 0
+
+                            v = vend_map[ref]
+                            unit = float(v.get('Outsource_Unit_Cost', 0) or 0)
+                            transport = float(v.get('Transport_Cost', 0) or 0)
+                            q = 1
+                            try:
+                                q = float(state.df_ops.loc[state.df_ops['Operation_ID'] == opid, 'Quantity'].values[0])
+                            except Exception:
+                                q = float(row.get('Quantity', 1) or 1)
+
+                            q = max(q, 1)
+                            quality = float(v.get('Quality_Factor', 1) or 1)
+                            if quality == 0:
+                                quality = 1
+                            calc = ((unit * q) + transport) / quality
+                            return float(calc)
+                        except Exception:
+                            return row.get('Outsource_Cost', 0)
+
+                    schedule_df['Outsource_Cost'] = schedule_df.apply(_compute_vendor_cost, axis=1)
+            except Exception:
+                pass
         except Exception:
             pass
         state.current_heuristic = heuristic
@@ -1101,6 +1239,54 @@ def get_current_schedule():
                 schedule_df['Release_Day'] = None
         except Exception:
             schedule_df['Release_Day'] = schedule_df.get('Release_Time_Min', None)
+
+        # Backfill Outsource_Cost if missing for outsourced operations by consulting vendor table
+        try:
+            if 'Outsource_Cost' in schedule_df.columns and state.df_vendors is not None:
+                vend = state.df_vendors.copy()
+                vend_map = vend.set_index('Vendor_ID').to_dict('index') if 'Vendor_ID' in vend.columns else {}
+
+                def _ensure_cost(row):
+                    try:
+                        if str(row.get('Assignment_Type','')).upper() != 'OUTSOURCE':
+                            return row.get('Outsource_Cost', 0)
+                        existing = row.get('Outsource_Cost', None)
+                        if existing and float(existing) > 0.01:
+                            return existing
+                        opid = row.get('Operation_ID')
+                        ref = None
+                        try:
+                            ref = state.df_ops.loc[state.df_ops['Operation_ID'] == opid, 'Vendor_Ref']
+                            if ref is not None and len(ref) > 0:
+                                ref = str(ref.values[0])
+                            else:
+                                ref = None
+                        except Exception:
+                            ref = None
+
+                        if not ref or ref not in vend_map:
+                            return existing if existing is not None else 0
+
+                        v = vend_map[ref]
+                        unit = float(v.get('Outsource_Unit_Cost', 0) or 0)
+                        transport = float(v.get('Transport_Cost', 0) or 0)
+                        q = 1
+                        try:
+                            q = float(state.df_ops.loc[state.df_ops['Operation_ID'] == opid, 'Quantity'].values[0])
+                        except Exception:
+                            q = float(row.get('Quantity', 1) or 1)
+                        q = max(q, 1)
+                        quality = float(v.get('Quality_Factor', 1) or 1)
+                        if quality == 0:
+                            quality = 1
+                        calc = ((unit * q) + transport) / quality
+                        return float(calc)
+                    except Exception:
+                        return row.get('Outsource_Cost', 0)
+
+                schedule_df['Outsource_Cost'] = schedule_df.apply(_ensure_cost, axis=1)
+        except Exception:
+            pass
 
         return {
             "heuristic": state.current_heuristic,
@@ -1604,6 +1790,279 @@ def analyze_hourly_cost(request: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/analysis/machine-roi")
+def analyze_machine_roi():
+    """
+    Comprehensive Machine ROI Analysis for CapEx investment decisions.
+    Analyzes each machine's utilization, throughput, revenue, costs, and ROI.
+    """
+    if state.df_ops is None or state.current_heuristic is None:
+        raise HTTPException(status_code=400, detail="Data not loaded or no heuristic applied. Please compute and apply a heuristic first.")
+    
+    try:
+        schedule_df = state.schedules.get(state.current_heuristic)
+        if schedule_df is None or schedule_df.empty:
+            raise HTTPException(status_code=400, detail="No schedule available")
+        
+        # Filter in-house operations only (exclude outsourced)
+        in_house = schedule_df[schedule_df['Machine_ID'] != 'OUTSOURCE'].copy()
+        
+        # Analysis parameters
+        hourly_labor_rate = 30  # $/hour
+        energy_cost_rate = 0.10  # 10% of labor cost
+        annual_hours = 2080  # Standard work year (40 hrs/week * 52 weeks)
+        makespan_days = schedule_df['End_Time'].max() / 480 if not schedule_df.empty else 1
+        
+        # Calculate metrics per machine
+        machine_metrics = []
+        
+        for machine_id in state.df_machines['Machine_ID']:
+            machine_ops = in_house[in_house['Machine_ID'] == machine_id]
+            machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id].iloc[0]
+            
+            # Basic metrics
+            jobs_count = machine_ops['Job_ID'].nunique() if not machine_ops.empty else 0
+            operations_count = len(machine_ops)
+            
+            # Time analysis
+            total_proc_time_min = machine_ops['Proc_Time'].sum() if not machine_ops.empty else 0
+            total_setup_time_min = machine_ops['Setup_Time'].sum() if not machine_ops.empty else 0
+            total_active_time_min = total_proc_time_min + total_setup_time_min
+            
+            # Utilization calculation
+            if not machine_ops.empty:
+                machine_start = machine_ops['Start_Time'].min()
+                machine_end = machine_ops['End_Time'].max()
+                machine_span_min = machine_end - machine_start
+                utilization_pct = (total_active_time_min / machine_span_min * 100) if machine_span_min > 0 else 0
+            else:
+                machine_span_min = 0
+                utilization_pct = 0
+            
+            # Revenue calculation (value produced)
+            # Estimate: hourly rate * effective hours processed
+            revenue = (total_proc_time_min / 60) * hourly_labor_rate * 1.5  # 1.5x multiplier for value-add
+            
+            # Operating costs
+            labor_cost = (total_active_time_min / 60) * hourly_labor_rate
+            energy_cost = labor_cost * energy_cost_rate
+            
+            # Maintenance cost (estimated from maintenance windows)
+            maintenance_cost = 0
+            maintenance_hours = 0
+            try:
+                maint_window = machine_row.get('Maintenance_Window')
+                if maint_window:
+                    if isinstance(maint_window, list):
+                        maintenance_hours = sum(w.get('duration', 0) for w in maint_window) / 60
+                    elif isinstance(maint_window, dict):
+                        maintenance_hours = maint_window.get('duration', 0) / 60
+                    maintenance_cost = maintenance_hours * 50  # $50/hr maintenance labor
+            except Exception:
+                pass
+            
+            total_operating_cost = labor_cost + energy_cost + maintenance_cost
+            
+            # Profit and ROI calculation
+            profit = revenue - total_operating_cost
+            
+            # Purchase price (from machine_data.csv)
+            purchase_price = 0
+            try:
+                price = machine_row.get('Purchase_Price_($)', machine_row.get('Purchase_Price($)'))
+                if price and price not in [None, '', 'nan']:
+                    purchase_price = float(price)
+            except Exception:
+                pass
+            
+            # ROI calculation
+            if purchase_price > 0 and profit > 0:
+                # Annualize profit based on makespan
+                annual_profit = profit * (365 / makespan_days) if makespan_days > 0 else profit
+                roi_pct = (annual_profit / purchase_price) * 100
+                payback_years = purchase_price / annual_profit if annual_profit > 0 else float('inf')
+            else:
+                annual_profit = 0
+                roi_pct = 0
+                payback_years = float('inf')
+            
+            # Throughput metrics
+            throughput_ops_per_day = operations_count / makespan_days if makespan_days > 0 else 0
+            avg_cycle_time_hours = (total_active_time_min / operations_count / 60) if operations_count > 0 else 0
+            
+            # Speed factor
+            speed_factor = machine_row.get('Speed_Factor', 1.0)
+            
+            # Idle time
+            idle_time_min = machine_span_min - total_active_time_min if machine_span_min > total_active_time_min else 0
+            idle_time_pct = (idle_time_min / machine_span_min * 100) if machine_span_min > 0 else 0
+            
+            # Op types handled
+            op_types = []
+            try:
+                if not machine_ops.empty and 'Op_Type' in machine_ops.columns:
+                    op_types = machine_ops['Op_Type'].unique().tolist()
+            except Exception:
+                pass
+            
+            machine_metrics.append({
+                'machine_id': machine_id,
+                'machine_type': machine_row.get('Machine_Type', 'N/A'),
+                'speed_factor': float(speed_factor),
+                'jobs_count': int(jobs_count),
+                'operations_count': int(operations_count),
+                'total_proc_hours': round(total_proc_time_min / 60, 2),
+                'total_setup_hours': round(total_setup_time_min / 60, 2),
+                'total_active_hours': round(total_active_time_min / 60, 2),
+                'machine_span_hours': round(machine_span_min / 60, 2),
+                'utilization_pct': round(utilization_pct, 1),
+                'idle_hours': round(idle_time_min / 60, 2),
+                'idle_pct': round(idle_time_pct, 1),
+                'maintenance_hours': round(maintenance_hours, 2),
+                'revenue': round(revenue, 2),
+                'labor_cost': round(labor_cost, 2),
+                'energy_cost': round(energy_cost, 2),
+                'maintenance_cost': round(maintenance_cost, 2),
+                'total_operating_cost': round(total_operating_cost, 2),
+                'profit': round(profit, 2),
+                'purchase_price': purchase_price,
+                'annual_profit': round(annual_profit, 2),
+                'roi_pct': round(roi_pct, 1),
+                'payback_years': round(payback_years, 2) if payback_years != float('inf') else None,
+                'throughput_ops_per_day': round(throughput_ops_per_day, 2),
+                'avg_cycle_time_hours': round(avg_cycle_time_hours, 2),
+                'op_types_handled': op_types
+            })
+        
+        # Sort by ROI descending
+        machine_metrics.sort(key=lambda x: x['roi_pct'], reverse=True)
+        
+        # Overall summary
+        total_revenue = sum(m['revenue'] for m in machine_metrics)
+        total_costs = sum(m['total_operating_cost'] for m in machine_metrics)
+        total_profit = sum(m['profit'] for m in machine_metrics)
+        avg_utilization = sum(m['utilization_pct'] for m in machine_metrics) / len(machine_metrics) if machine_metrics else 0
+        
+        # Investment recommendations (realistic rules)
+        # - Use plant-wide avg utilization as a guardrail: if plant avg utilization is low,
+        #   avoid aggressive expansion unless a machine is clearly capacity-constrained.
+        recommendations = []
+        plant_util = avg_utilization
+
+        for m in machine_metrics:
+            util = m.get('utilization_pct', 0)
+            roi = m.get('roi_pct', 0)
+            payback = m.get('payback_years')
+            ops = m.get('operations_count', 0)
+
+            # No work on machine -> review for redeploy/decommission
+            if ops == 0:
+                recommendations.append({
+                    'machine_id': m['machine_id'],
+                    'recommendation': 'REVIEW',
+                    'priority': 'LOW',
+                    'reason': 'No operations scheduled. Consider redeployment, selling or converting to flexible use.',
+                    'potential_savings': round(m.get('maintenance_cost', 0) * 12, 2)
+                })
+                continue
+
+            # Critical: negative ROI or clear loss-making
+            if roi < 0:
+                recommendations.append({
+                    'machine_id': m['machine_id'],
+                    'recommendation': 'CRITICAL_REVIEW',
+                    'priority': 'HIGH',
+                    'reason': f'Negative ROI ({roi}%). Operating costs exceed value produced. Immediate operational review required.',
+                    'annual_loss': round(abs(m.get('annual_profit', 0)), 2)
+                })
+                continue
+
+            # Capacity expansion logic (realistic): require both high utilization AND reasonable payback/ROI
+            expand = False
+            expand_reason = ''
+
+            # If machine is heavily loaded (>=85%), strong case for expansion regardless of plant average
+            if util >= 85:
+                expand = True
+                expand_reason = f'High utilization ({util}%) indicates capacity constraint.'
+
+            # Otherwise require utilization above threshold AND financial justification
+            elif util >= 75:
+                # require either strong ROI or acceptable payback
+                if (payback and payback <= 5) or roi >= 30:
+                    expand = True
+                    expand_reason = f'Utilization {util}% with favorable ROI/payback (ROI {roi}%, payback {payback} yrs).'
+
+            # If plant utilization is low (<60%), be conservative: only expand at very high util (>=85)
+            if plant_util < 60 and util < 85:
+                # downgrade expansion to 'CONSIDER' or 'OPTIMIZE' unless clearly justified
+                if expand:
+                    recommendations.append({
+                        'machine_id': m['machine_id'],
+                        'recommendation': 'CONSIDER',
+                        'priority': 'MEDIUM',
+                        'reason': f"Plant avg utilization is low ({plant_util:.1f}%). {expand_reason} Consider operational fixes before CapEx.",
+                        'estimated_additional_revenue': round(m.get('annual_profit', 0) * 0.5, 2)
+                    })
+                    continue
+
+            if expand:
+                recommendations.append({
+                    'machine_id': m['machine_id'],
+                    'recommendation': 'EXPAND',
+                    'priority': 'HIGH' if util >= 85 or (payback and payback <= 5) else 'MEDIUM',
+                    'reason': expand_reason or 'Capacity expansion recommended based on utilization and financials.',
+                    'estimated_additional_revenue': round(m.get('annual_profit', 0) * 0.8, 2)
+                })
+                continue
+
+            # Optimization candidates: moderate utilization but low ROI or high idle time
+            if util < 50 and ops > 0:
+                recommendations.append({
+                    'machine_id': m['machine_id'],
+                    'recommendation': 'OPTIMIZE',
+                    'priority': 'MEDIUM',
+                    'reason': f'Low utilization ({util}%). Consider shifting workload or rescheduling to increase throughput.',
+                    'potential_savings': round(m.get('total_operating_cost', 0) * 0.25, 2)
+                })
+                continue
+
+            # Conservative default: suggest monitoring / incremental improvements
+            recommendations.append({
+                'machine_id': m['machine_id'],
+                'recommendation': 'MONITOR',
+                'priority': 'LOW',
+                'reason': 'Machine shows acceptable performance; prioritize monitoring and incremental optimization.',
+            })
+        
+        return {
+            "status": "success",
+            "heuristic": state.current_heuristic,
+            "analysis_period_days": round(makespan_days, 2),
+            "parameters": {
+                "hourly_labor_rate": hourly_labor_rate,
+                "energy_cost_rate_pct": energy_cost_rate * 100,
+                "annual_work_hours": annual_hours
+            },
+            "summary": {
+                "total_machines": len(machine_metrics),
+                "active_machines": len([m for m in machine_metrics if m['operations_count'] > 0]),
+                "total_revenue": round(total_revenue, 2),
+                "total_operating_costs": round(total_costs, 2),
+                "total_profit": round(total_profit, 2),
+                "avg_utilization_pct": round(avg_utilization, 1),
+                "highest_roi_machine": machine_metrics[0]['machine_id'] if machine_metrics and machine_metrics[0]['roi_pct'] > 0 else None,
+                "highest_roi_value": machine_metrics[0]['roi_pct'] if machine_metrics else 0
+            },
+            "machines": machine_metrics,
+            "recommendations": recommendations
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Machine ROI analysis failed: {str(e)}")
+
 @app.post("/api/data/unload")
 def unload_data():
     """Unload all dataset and reset state"""
@@ -1767,6 +2226,626 @@ def delete_job(job_id: str):
             "message": f"Deleted job {job_id} and {ops_count} operations"
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# CAPEX ANALYSIS & MACHINE PURCHASE ENDPOINTS
+# ============================================================================
+
+@app.post("/api/capex/analyze")
+def analyze_capex_opportunity(hourly_labor_rate: float = 30.0):
+    """
+    Analyze outsourced operations to find the biggest offender (most outsourced op type).
+    For each machine that can perform that operation, calculate:
+    - Cost to buy (machine purchase price)
+    - Cost to run in-house (labor + power/energy for those jobs)
+    - Savings (vendor cost - in-house cost)
+    - ROI / payback period
+    """
+    if state.df_ops is None or state.df_machines is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        # Find outsourced operations
+        outsourced = state.df_ops[state.df_ops['Assignment_Type'] == 'OUTSOURCE'].copy()
+        
+        simulated_mode = False
+        if len(outsourced) == 0:
+            # No operations currently marked as outsourced. Perform a simulation
+            # using the provided hourly_labor_rate to see which operations would
+            # be outsourced if make-or-buy were re-evaluated. This allows users
+            # to test "what-if" scenarios (e.g., very high labor rates).
+            simulated_mode = True
+            simulated_outsourced_idx = []
+            # Ensure df_effective is available for in-house cost calc
+            df_effective = state.df_effective if getattr(state, 'df_effective', None) is not None else pd.DataFrame()
+
+            for idx, op in state.df_ops.iterrows():
+                # Try to compute in-house cost for this operation
+                try:
+                    inhouse_cost, _ = calculate_inhouse_cost(op, df_effective, hourly_rate=hourly_labor_rate)
+                except Exception:
+                    inhouse_cost = None
+
+                # Use provided outsource cost if available, else fallback
+                try:
+                    outsource_cost = float(op.get('Outsource_Cost', 0) or 0)
+                except Exception:
+                    outsource_cost = 0
+
+                # Basic fallback when data missing
+                if outsource_cost <= 0.1 and inhouse_cost:
+                    outsource_cost = inhouse_cost * 1.2
+
+                # If we couldn't compute in-house, prefer outsource if vendor cost looks reasonable
+                decision_outsource = False
+                if inhouse_cost is None:
+                    if outsource_cost > 0:
+                        decision_outsource = True
+                else:
+                    if outsource_cost < (inhouse_cost * state.cost_threshold):
+                        decision_outsource = True
+
+                if decision_outsource:
+                    simulated_outsourced_idx.append(idx)
+
+            outsourced = state.df_ops.loc[simulated_outsourced_idx].copy()
+
+            if len(outsourced) == 0:
+                return {
+                    "status": "success",
+                    "message": "No outsourced operations found (including simulated scenario).",
+                    "biggest_offender": None,
+                    "recommendations": [],
+                    "simulated": True
+                }
+        
+        # Count by operation type
+        op_type_counts = outsourced.groupby('Op_Type').size().sort_values(ascending=False)
+        biggest_offender = op_type_counts.index[0]
+        offender_count = int(op_type_counts.iloc[0])
+        
+        # Get all operations of that type that are outsourced
+        offender_ops = outsourced[outsourced['Op_Type'] == biggest_offender].copy()
+        
+        # Total vendor cost for these operations
+        total_vendor_cost = offender_ops['Outsource_Cost'].sum()
+        
+        # Find eligible machines (machines that can perform this operation type)
+        eligible_machines = get_eligible_machines(biggest_offender)
+        
+        if len(eligible_machines) == 0:
+            return {
+                "status": "success",
+                "message": f"Biggest offender is {biggest_offender} ({offender_count} ops), but no machines can handle it.",
+                "biggest_offender": biggest_offender,
+                "offender_count": offender_count,
+                "recommendations": []
+            }
+        
+        # For each eligible machine, compute financial metrics
+        recommendations = []
+        
+        for machine_id in eligible_machines:
+            machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id]
+            if len(machine_row) == 0:
+                continue
+            machine_row = machine_row.iloc[0]
+            
+            # Purchase price (default if not in CSV)
+            purchase_price = None
+            for col in ['Purchase_Price_($)', 'Purchase_Price', 'Purchase_Cost']:
+                if col in machine_row.index:
+                    purchase_price = machine_row.get(col)
+                    break
+            
+            if purchase_price is None:
+                purchase_price = 150000  # default $150k
+            
+            try:
+                purchase_price = float(purchase_price)
+            except Exception:
+                purchase_price = 150000
+            
+            # Speed factor for effective time calculation
+            speed_factor = machine_row.get('Speed_Factor', 1.0)
+            try:
+                speed_factor = float(speed_factor)
+            except Exception:
+                speed_factor = 1.0
+            
+            # Calculate in-house cost to run these jobs on this machine
+            # Cost = (processing_time_hrs * hourly_labor_rate) + energy_cost
+            # Simplification: energy cost ~ 10% of labor cost
+            total_proc_min = 0
+            for idx, op in offender_ops.iterrows():
+                proc_min = op.get('Total_Proc_Min', 0)
+                effective_min = proc_min / speed_factor if speed_factor > 0 else proc_min
+                total_proc_min += effective_min
+            
+            total_proc_hrs = total_proc_min / 60.0
+            labor_cost = total_proc_hrs * hourly_labor_rate
+            energy_cost = labor_cost * 0.1  # assume 10% of labor for simplicity
+            total_inhouse_cost = labor_cost + energy_cost
+            
+            # Savings = vendor cost - in-house cost
+            savings = total_vendor_cost - total_inhouse_cost
+            
+            # ROI / Payback period (years)
+            # Payback = Purchase Price / Annual Savings
+            # Assume these jobs recur annually (or use actual frequency if known)
+            # For simplicity: annual_savings = savings (treating current dataset as 1 year)
+            if savings > 0:
+                payback_years = purchase_price / savings
+            else:
+                payback_years = None  # not profitable
+            
+            recommendations.append({
+                'machine_id': machine_id,
+                'machine_type': machine_row.get('Machine_Type', 'Unknown'),
+                'purchase_price': round(purchase_price, 2),
+                'labor_cost': round(labor_cost, 2),
+                'energy_cost': round(energy_cost, 2),
+                'total_inhouse_cost': round(total_inhouse_cost, 2),
+                'vendor_cost': round(total_vendor_cost, 2),
+                'savings': round(savings, 2),
+                'payback_years': round(payback_years, 2) if payback_years else None,
+                'jobs_count': len(offender_ops),
+                'total_proc_hours': round(total_proc_hrs, 2),
+                'calculation_details': {
+                    'hourly_labor_rate': hourly_labor_rate,
+                    'speed_factor': speed_factor,
+                    'total_processing_minutes': round(total_proc_min, 2),
+                    'formula': {
+                        'labor': f"{round(total_proc_hrs, 2)} hrs × ${hourly_labor_rate}/hr = ${round(labor_cost, 2)}",
+                        'energy': f"10% of labor = ${round(energy_cost, 2)}",
+                        'total_inhouse': f"${round(labor_cost, 2)} + ${round(energy_cost, 2)} = ${round(total_inhouse_cost, 2)}",
+                        'savings': f"${round(total_vendor_cost, 2)} (vendor) - ${round(total_inhouse_cost, 2)} (in-house) = ${round(savings, 2)}",
+                        'payback': f"${round(purchase_price, 2)} ÷ ${round(savings, 2)}/year = {round(payback_years, 2) if payback_years else 'N/A'} years" if savings > 0 else "No payback (vendor is cheaper)"
+                    }
+                }
+            })
+        
+        # Sort by savings (descending)
+        recommendations.sort(key=lambda x: x['savings'], reverse=True)
+        
+        # Generate AI explanation if enabled
+        ai_explanation = None
+        if AI_ENABLED and len(recommendations) > 0:
+            try:
+                best_rec = recommendations[0]
+                analysis_context = f"""
+You are a manufacturing financial analyst. Analyze this capital expenditure opportunity:
+
+**Situation:**
+- Operation Type: {biggest_offender}
+- Currently Outsourced: {offender_count} operations
+- Total Vendor Cost: ${round(total_vendor_cost, 2):,}
+
+**Best Machine Recommendation:**
+- Machine: {best_rec['machine_id']} ({best_rec['machine_type']})
+- Purchase Price: ${best_rec['purchase_price']:,}
+- Annual In-House Cost: ${best_rec['total_inhouse_cost']:,}
+  - Labor ({best_rec['total_proc_hours']:.1f} hrs @ ${hourly_labor_rate}/hr): ${best_rec['labor_cost']:,}
+  - Energy (10% estimate): ${best_rec['energy_cost']:,}
+- Annual Savings: ${best_rec['savings']:,}
+- Payback Period: {best_rec['payback_years'] if best_rec['payback_years'] else 'Not profitable'} years
+
+Provide a brief 3-4 sentence analysis covering:
+1. Whether this investment makes financial sense and why
+2. Key risk factors or considerations
+3. Strategic recommendation (buy now, wait, or avoid)
+
+Be concise and actionable. Use simple language suitable for a manufacturing manager.
+"""
+                
+                ai_explanation = get_ai_insights(analysis_context, context_data=None)
+                
+            except Exception as e:
+                print(f"[CapEx] AI explanation failed: {e}")
+                ai_explanation = None
+        
+        return {
+            "status": "success",
+            "biggest_offender": biggest_offender,
+            "offender_count": offender_count,
+            "total_vendor_cost": round(total_vendor_cost, 2),
+            "recommendations": recommendations,
+            "simulated": simulated_mode,
+            "ai_explanation": ai_explanation,
+            "assumptions": {
+                "energy_cost_percent": 10,
+                "dataset_represents": "annual volume",
+                "hourly_labor_rate_used": hourly_labor_rate
+            }
+        }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/capex/buy-machine")
+def buy_machine(request: BuyMachineRequest):
+    """
+    Clone the specified machine and append it to machine_data.csv permanently.
+    Assigns a new Machine_ID (e.g., M1 -> M1_NEW1).
+    After adding machine, automatically recompute all heuristics and apply the best one.
+    """
+    if state.df_machines is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        machine_id = request.machine_id
+        
+        # Find the machine to clone
+        machine_row = state.df_machines[state.df_machines['Machine_ID'] == machine_id]
+        if len(machine_row) == 0:
+            raise HTTPException(status_code=404, detail=f"Machine {machine_id} not found")
+        
+        machine_row = machine_row.iloc[0].copy()
+        
+        # Generate new ID
+        # Find existing clones (e.g., M1_NEW1, M1_NEW2)
+        base_id = machine_id
+        existing_ids = state.df_machines['Machine_ID'].tolist()
+        clone_num = 1
+        new_id = f"{base_id}_NEW{clone_num}"
+        while new_id in existing_ids:
+            clone_num += 1
+            new_id = f"{base_id}_NEW{clone_num}"
+        
+        # Create new row
+        new_row = machine_row.to_dict()
+        new_row['Machine_ID'] = new_id
+        
+        # Append to in-memory state
+        new_row_df = pd.DataFrame([new_row])
+        state.df_machines = pd.concat([state.df_machines, new_row_df], ignore_index=True)
+        
+        # Write to CSV permanently
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        csv_path = os.path.join(base_dir, 'data', 'machine_data.csv')
+        
+        state.df_machines.to_csv(csv_path, index=False)
+        
+        # Rebuild effective times with new machine
+        effective_times = []
+        for idx, op in state.df_ops.iterrows():
+            op_type = op['Op_Type']
+            eligible = get_eligible_machines(op_type)
+            for mid in eligible:
+                mrow = state.df_machines[state.df_machines['Machine_ID'] == mid]
+                if len(mrow) > 0:
+                    speed_factor = mrow.iloc[0]['Speed_Factor']
+                    effective_proc_time = op['Total_Proc_Min'] / speed_factor
+                    total_time = op['Setup_Time'] + effective_proc_time + op.get('Transfer_Min', 0)
+                    effective_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': mid,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+        state.df_effective = pd.DataFrame(effective_times)
+        
+        # Auto-recompute all heuristics to assign tasks to new machine
+        heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+        results = {}
+        best_heuristic = None
+        best_score = float('inf')
+        
+        for heur in heuristics:
+            df_ops_for_sched = state.df_ops.copy()
+            try:
+                for idx, op in df_ops_for_sched.iterrows():
+                    try:
+                        decision = make_or_buy_decision(op, state.df_effective, cost_threshold=state.cost_threshold)
+                    except TypeError:
+                        decision = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
+                    if isinstance(decision, (list, tuple)) and len(decision) > 0 and str(decision[0]).upper() == 'OUTSOURCE':
+                        df_ops_for_sched.at[idx, 'Assignment_Type'] = 'OUTSOURCE'
+            except Exception:
+                pass
+
+            scheduler = CNCScheduler(
+                df_ops_for_sched,
+                state.df_machines.copy(),
+                state.df_effective.copy(),
+                state.df_penalties.copy()
+            )
+
+            schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
+            
+            if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
+                schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+                schedule_df = schedule_df.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                
+                metrics = calculate_metrics(schedule_df, state.df_machines)
+                state.schedules[heur] = schedule_df
+                state.metrics[heur] = metrics
+                results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
+                
+                # Track best heuristic by makespan
+                if metrics.get('Makespan_Days', float('inf')) < best_score:
+                    best_score = metrics['Makespan_Days']
+                    best_heuristic = heur
+        
+        # Apply the best heuristic automatically
+        if best_heuristic and best_heuristic in state.schedules:
+            state.current_heuristic = best_heuristic
+            state.current_schedule = state.schedules[best_heuristic]
+        
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Machine Purchased',
+            'details': f"Cloned {machine_id} as {new_id}, recomputed all heuristics, applied {best_heuristic}"
+        })
+        
+        return {
+            "status": "success",
+            "message": f"Successfully purchased {new_id} (clone of {machine_id}), recomputed heuristics, and applied {best_heuristic}",
+            "new_machine_id": new_id,
+            "machines_count": len(state.df_machines),
+            "best_heuristic": best_heuristic,
+            "results": {k: {'metrics': v['metrics']} for k, v in results.items()}
+        }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/machines/add")
+def add_machine(request: AddMachineRequest):
+    """
+    Add a new machine with specified parameters.
+    Automatically rebuilds effective times and recomputes all heuristics.
+    """
+    if state.df_machines is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        # Check if machine ID already exists
+        if request.machine_id in state.df_machines['Machine_ID'].values:
+            raise HTTPException(status_code=400, detail=f"Machine {request.machine_id} already exists")
+        
+        # Create new machine row
+        new_machine = {
+            'Machine_ID': request.machine_id,
+            'Machine_Type': request.machine_type,
+            'Op_Types': request.op_types,
+            'Speed_Factor': request.speed_factor,
+            'Hourly_Rate': request.hourly_rate,
+            'Maintenance_Cost': request.maintenance_cost,
+            'Energy_Cost_per_Hour': request.energy_cost_per_hour,
+            'Purchase_Price': request.purchase_price or 50000.0
+        }
+        
+        # Append to in-memory state
+        new_row_df = pd.DataFrame([new_machine])
+        state.df_machines = pd.concat([state.df_machines, new_row_df], ignore_index=True)
+        
+        # Write to CSV permanently
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        csv_path = os.path.join(base_dir, 'data', 'machine_data.csv')
+        state.df_machines.to_csv(csv_path, index=False)
+        
+        # Rebuild effective times
+        effective_times = []
+        for idx, op in state.df_ops.iterrows():
+            op_type = op['Op_Type']
+            eligible = get_eligible_machines(op_type)
+            for mid in eligible:
+                mrow = state.df_machines[state.df_machines['Machine_ID'] == mid]
+                if len(mrow) > 0:
+                    speed_factor = mrow.iloc[0]['Speed_Factor']
+                    effective_proc_time = op['Total_Proc_Min'] / speed_factor
+                    total_time = op['Setup_Time'] + effective_proc_time + op.get('Transfer_Min', 0)
+                    effective_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': mid,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+        state.df_effective = pd.DataFrame(effective_times)
+        
+        # Recompute all heuristics
+        heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+        results = {}
+        best_heuristic = None
+        best_score = float('inf')
+        
+        for heur in heuristics:
+            df_ops_for_sched = state.df_ops.copy()
+            try:
+                for idx, op in df_ops_for_sched.iterrows():
+                    try:
+                        decision = make_or_buy_decision(op, state.df_effective, cost_threshold=state.cost_threshold)
+                    except TypeError:
+                        decision = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
+                    if isinstance(decision, (list, tuple)) and len(decision) > 0 and str(decision[0]).upper() == 'OUTSOURCE':
+                        df_ops_for_sched.at[idx, 'Assignment_Type'] = 'OUTSOURCE'
+            except Exception:
+                pass
+
+            scheduler = CNCScheduler(
+                df_ops_for_sched,
+                state.df_machines.copy(),
+                state.df_effective.copy(),
+                state.df_penalties.copy()
+            )
+
+            schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
+            
+            if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
+                schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+                schedule_df = schedule_df.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                
+                metrics = calculate_metrics(schedule_df, state.df_machines)
+                state.schedules[heur] = schedule_df
+                state.metrics[heur] = metrics
+                results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
+                
+                if metrics.get('Makespan_Days', float('inf')) < best_score:
+                    best_score = metrics['Makespan_Days']
+                    best_heuristic = heur
+        
+        # Apply best heuristic
+        if best_heuristic and best_heuristic in state.schedules:
+            state.current_heuristic = best_heuristic
+            state.current_schedule = state.schedules[best_heuristic]
+        
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Machine Added',
+            'details': f"Added {request.machine_id}, recomputed all heuristics, applied {best_heuristic}"
+        })
+        
+        return {
+            "status": "success",
+            "message": f"Successfully added machine {request.machine_id}, recomputed heuristics, and applied {best_heuristic}",
+            "machine_id": request.machine_id,
+            "machines_count": len(state.df_machines),
+            "best_heuristic": best_heuristic,
+            "results": {k: {'metrics': v['metrics']} for k, v in results.items()}
+        }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/machines/remove")
+def remove_machine(request: RemoveMachineRequest):
+    """
+    Remove a machine from the system.
+    Automatically rebuilds effective times and recomputes all heuristics.
+    """
+    if state.df_machines is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        machine_id = request.machine_id
+        
+        # Check if machine exists
+        if machine_id not in state.df_machines['Machine_ID'].values:
+            raise HTTPException(status_code=404, detail=f"Machine {machine_id} not found")
+        
+        # Remove from in-memory state
+        state.df_machines = state.df_machines[state.df_machines['Machine_ID'] != machine_id].copy()
+        
+        # Write to CSV permanently
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        csv_path = os.path.join(base_dir, 'data', 'machine_data.csv')
+        state.df_machines.to_csv(csv_path, index=False)
+        
+        # Rebuild effective times (excluding removed machine)
+        effective_times = []
+        for idx, op in state.df_ops.iterrows():
+            op_type = op['Op_Type']
+            eligible = get_eligible_machines(op_type)
+            for mid in eligible:
+                if mid == machine_id:
+                    continue  # Skip removed machine
+                mrow = state.df_machines[state.df_machines['Machine_ID'] == mid]
+                if len(mrow) > 0:
+                    speed_factor = mrow.iloc[0]['Speed_Factor']
+                    effective_proc_time = op['Total_Proc_Min'] / speed_factor
+                    total_time = op['Setup_Time'] + effective_proc_time + op.get('Transfer_Min', 0)
+                    effective_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': mid,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+        state.df_effective = pd.DataFrame(effective_times)
+        
+        # Recompute all heuristics
+        heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+        results = {}
+        best_heuristic = None
+        best_score = float('inf')
+        
+        for heur in heuristics:
+            df_ops_for_sched = state.df_ops.copy()
+            try:
+                for idx, op in df_ops_for_sched.iterrows():
+                    try:
+                        decision = make_or_buy_decision(op, state.df_effective, cost_threshold=state.cost_threshold)
+                    except TypeError:
+                        decision = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
+                    if isinstance(decision, (list, tuple)) and len(decision) > 0 and str(decision[0]).upper() == 'OUTSOURCE':
+                        df_ops_for_sched.at[idx, 'Assignment_Type'] = 'OUTSOURCE'
+            except Exception:
+                pass
+
+            scheduler = CNCScheduler(
+                df_ops_for_sched,
+                state.df_machines.copy(),
+                state.df_effective.copy(),
+                state.df_penalties.copy()
+            )
+
+            schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
+            
+            if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
+                schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+                schedule_df = schedule_df.merge(
+                    state.df_ops[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                    on='Operation_ID', how='left'
+                )
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                
+                metrics = calculate_metrics(schedule_df, state.df_machines)
+                state.schedules[heur] = schedule_df
+                state.metrics[heur] = metrics
+                results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
+                
+                if metrics.get('Makespan_Days', float('inf')) < best_score:
+                    best_score = metrics['Makespan_Days']
+                    best_heuristic = heur
+        
+        # Apply best heuristic
+        if best_heuristic and best_heuristic in state.schedules:
+            state.current_heuristic = best_heuristic
+            state.current_schedule = state.schedules[best_heuristic]
+        
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Machine Removed',
+            'details': f"Removed {machine_id}, recomputed all heuristics, applied {best_heuristic}"
+        })
+        
+        return {
+            "status": "success",
+            "message": f"Successfully removed machine {machine_id}, recomputed heuristics, and applied {best_heuristic}",
+            "machine_id": machine_id,
+            "machines_count": len(state.df_machines),
+            "best_heuristic": best_heuristic,
+            "results": {k: {'metrics': v['metrics']} for k, v in results.items()}
+        }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

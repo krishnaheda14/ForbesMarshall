@@ -16,6 +16,8 @@ import ExcelUpload from './pages/ExcelUpload';
 import CostAnalysis from './pages/CostAnalysis';
 import OutsourcingAnalysis from './pages/OutsourcingAnalysis';
 import ActivityLog from './pages/ActivityLog';
+import CapexAnalysis from './pages/CapexAnalysis';
+import MachineROI from './pages/MachineROI';
 
 const theme = createTheme({
   palette: {
@@ -120,6 +122,8 @@ function App() {
                   <Route path="/operations" element={<OperationStatus />} />
                   <Route path="/cost-analysis" element={<CostAnalysis />} />
                   <Route path="/outsourcing" element={<OutsourcingAnalysis />} />
+                  <Route path="/capex" element={<CapexAnalysis />} />
+                  <Route path="/machine-roi" element={<MachineROI />} />
                   <Route path="/activity-log" element={<ActivityLog />} />
                   <Route path="/settings" element={<Settings />} />
                 </Routes>
