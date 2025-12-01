@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 import time
 import os
-import re
 from dotenv import load_dotenv
 import google.generativeai as genai
 import requests
@@ -109,8 +108,6 @@ class AppState:
         self.schedules = {}
         self.metrics = {}
         self.current_heuristic = None
-        # Default outsourcing threshold: vendor must be below this fraction of in-house cost
-        # to be selected. Lower value -> fewer outsourcing decisions (improves in-house utilization).
         self.cost_threshold = 0.9
         self.activity_log = []
 
@@ -179,7 +176,6 @@ def load_all_data(sample_size=None):
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     data_dir = os.path.join(base_dir, 'data')
     
-    attempts = []
     try:
         # Use jobs_dataset.csv for normal operations
         df_ops = pd.read_csv(os.path.join(data_dir, 'jobs_dataset.csv'))
@@ -189,7 +185,7 @@ def load_all_data(sample_size=None):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=f"Data file not found: {e}")
 
-    # Data preprocessing (same as original)
+    # Data preprocessing
     
     # Normalize column names - replace spaces with underscores
     df_machines.columns = df_machines.columns.str.replace(' ', '_')
@@ -201,38 +197,28 @@ def load_all_data(sample_size=None):
         unique_jobs = df_ops['Job_ID'].unique()[:sample_size]
         df_ops = df_ops[df_ops['Job_ID'].isin(unique_jobs)].copy()
 
-    # Total processing time in minutes (per unit * quantity). If Proc_Time is in hours, user must convert upstream.
+    # Processing Time Calculation
     if 'Proc_Time_per_Unit' in df_ops.columns:
         proc_per_unit = pd.to_numeric(df_ops['Proc_Time_per_Unit'], errors='coerce')
         qty = pd.to_numeric(df_ops['Quantity'], errors='coerce')
         df_ops['Total_Proc_Min'] = proc_per_unit * qty
-        # Heuristic: if Proc_Time_per_Unit looks like hours (small decimals <=24) convert to minutes
+        
+        # Heuristic: if Proc_Time_per_Unit looks like hours (small decimals), convert
         try:
             vals = proc_per_unit.dropna()
             if len(vals) > 0 and vals.max() <= 24 and vals.mean() < 10:
-                # Likely hours — convert Total_Proc_Min from hours to minutes
                 df_ops['Total_Proc_Min'] = df_ops['Total_Proc_Min'] * 60
-                print('[data-load] Converted Proc_Time_per_Unit from hours->minutes (multiplied by 60)')
         except Exception:
             pass
-        # Ensure numeric and no NaNs for Total_Proc_Min when Proc_Time_per_Unit path used
         df_ops['Total_Proc_Min'] = pd.to_numeric(df_ops['Total_Proc_Min'], errors='coerce').fillna(0)
     elif 'Proc_Time' in df_ops.columns:
-        # Older datasets may have a Proc_Time column already representing per-operation time
         df_ops['Total_Proc_Min'] = pd.to_numeric(df_ops['Proc_Time'], errors='coerce') * pd.to_numeric(df_ops['Quantity'], errors='coerce')
         df_ops['Total_Proc_Min'] = pd.to_numeric(df_ops['Total_Proc_Min'], errors='coerce').fillna(0)
     else:
-        # No processing time columns found — default to zero to avoid crashes downstream
         df_ops['Total_Proc_Min'] = 0
 
-    # Release/Due time conversion deferred until after vendor merge so a single
-    # consistent minutes-per-day conversion (workday-based) is applied.
-    # (See later where MINUTES_PER_DAY = 8 * 60 is used.)
-
-    # DO NOT pre-assign Assignment_Type - let scheduler heuristics determine it
-    # Assignment_Type will be set based on make_or_buy_decision during scheduling
     if 'Assignment_Type' not in df_ops.columns:
-        df_ops['Assignment_Type'] = None  # Will be determined by scheduler
+        df_ops['Assignment_Type'] = None 
 
     # Normalize machines df
     if 'Speed_Factor' not in df_machines.columns and 'SpeedFactor' in df_machines.columns:
@@ -264,7 +250,7 @@ def load_all_data(sample_size=None):
                 })
     df_effective = pd.DataFrame(effective_times)
 
-    # Process vendor data (original behavior)
+    # Process vendor data
     df_vendors['Outsource_Unit_Cost'] = df_vendors['Outsource_Unit_Cost'].replace('[\\$,]', '', regex=True).astype(float)
     df_vendors['Transport_Cost'] = df_vendors['Transport_Cost'].replace('[\\$,]', '', regex=True).astype(float)
 
@@ -284,22 +270,30 @@ def load_all_data(sample_size=None):
         on='Operation_ID', how='left'
     )
 
-    MINUTES_PER_DAY = 8 * 60
+    # --- CRITICAL DATA FIX: Correcting Impossible Deadlines ---
+    MINUTES_PER_DAY = 15*60
     df_ops['Release_Time_Min'] = df_ops['Release_Day'] * MINUTES_PER_DAY
-    df_ops['Due_Time_Min'] = df_ops['Due_Day'] * MINUTES_PER_DAY
+    
+    # Logic: If Due_Day is smaller than Release_Day, assume it means "Lead Time" (Duration)
+    # Example: Release Day 33, Due Day 5 --> Real Due Date = Day 38
+    df_ops['Due_Time_Min'] = df_ops.apply(
+        lambda row: (row['Release_Day'] + row['Due_Day']) * MINUTES_PER_DAY 
+                    if row['Due_Day'] < row['Release_Day'] 
+                    else row['Due_Day'] * MINUTES_PER_DAY, 
+        axis=1
+    )
+    # ----------------------------------------------------------
+    
     df_ops['Outsource_Cost'].fillna(0, inplace=True)
     df_ops['Outsource_Time_Min'].fillna(0, inplace=True)
     df_ops['Completion_Day'] = 0
 
-    # Parse maintenance windows - column name already normalized to underscores
+    # Parse maintenance windows
     maintenance_col = 'Scheduled_Maintenance_(Day,_Time-Time)'
     if maintenance_col in df_machines.columns:
         df_machines['Maintenance_Window'] = df_machines[maintenance_col].apply(parse_maintenance)
     else:
         df_machines['Maintenance_Window'] = None
-
-    # DO NOT call make_or_buy_decision here - it will be called by the scheduler
-    # The scheduler will determine Assignment_Type based on the selected heuristic
 
     return df_ops, df_machines, df_effective, df_penalties, df_vendors
 
@@ -317,39 +311,6 @@ def get_ai_insights(prompt: str, context_data: Optional[Dict] = None):
 
     # Track provider attempts for debug / frontend visibility
     attempts = []
-
-    # Clean AI text output to remove Markdown and make it professional/plain text
-    def _clean_ai_text(text: Optional[str]) -> str:
-        try:
-            if text is None:
-                return ''
-            s = str(text)
-            # Remove fenced code blocks
-            s = re.sub(r'```[\s\S]*?```', '', s)
-            # Remove ATX headings (e.g., #, ##, ###)
-            s = re.sub(r'^#{1,6}\s*', '', s, flags=re.M)
-            # Remove bold/italic markers
-            s = s.replace('**', '').replace('__', '')
-            # Remove inline code ticks
-            s = re.sub(r'`([^`]*)`', r'\1', s)
-            # Remove markdown table rows
-            lines = []
-            for ln in s.splitlines():
-                if '|' in ln and re.search(r'\|', ln):
-                    continue
-                # Normalize unordered list markers
-                ln = re.sub(r'^\s*[-*+]\s*', '- ', ln)
-                lines.append(ln.rstrip())
-            s = '\n'.join(lines)
-            # Collapse multiple blank lines
-            s = re.sub(r'\n\s*\n+', '\n\n', s)
-            return s.strip()
-        except Exception:
-            return str(text or '')
-
-    def _format_response(raw_text: Optional[str], provider: Optional[str]):
-        cleaned = _clean_ai_text(raw_text)
-        return {'text': cleaned, 'provider_used': provider, 'attempts': attempts}
 
     def summarize_context(ctx):
         """Create a compact summary of context_data to avoid token limits."""
@@ -479,7 +440,7 @@ Provide 3-5 direct, actionable insights as bullet points.
                 if resp.status_code == 200:
                     text = resp.json()['choices'][0]['message']['content']
                     attempts.append({'provider': 'openrouter', 'status': 'success'})
-                    return _format_response(text, 'openrouter')
+                    return {'text': text, 'provider_used': 'openrouter', 'attempts': attempts}
                 # Token limit exceeded -> retry with short prompt
                 if resp.status_code == 402 and context_data:
                     try:
@@ -493,7 +454,7 @@ Provide 3-5 direct, actionable insights as bullet points.
                         if retry.status_code == 200:
                             text = retry.json()['choices'][0]['message']['content']
                             attempts.append({'provider': 'openrouter', 'status': 'retry_success', 'note': 'short_prompt'})
-                            return _format_response(text, 'openrouter')
+                            return {'text': text, 'provider_used': 'openrouter', 'attempts': attempts}
                     except Exception:
                         pass
                 # Otherwise try Mistral then Gemini
@@ -503,7 +464,7 @@ Provide 3-5 direct, actionable insights as bullet points.
                     try:
                         mtxt = call_mistral(short_prompt if context_data else full_prompt)
                         attempts.append({'provider': 'mistral', 'status': 'success'})
-                        return _format_response(mtxt, 'mistral')
+                        return {'text': mtxt, 'provider_used': 'mistral', 'attempts': attempts}
                     except Exception as me:
                         attempts.append({'provider': 'mistral', 'status': 'error', 'message': str(me)[:200]})
                         last_err += f"; Mistral failed: {str(me)[:200]}"
@@ -511,45 +472,45 @@ Provide 3-5 direct, actionable insights as bullet points.
                     try:
                         gm = gemini_model.generate_content(short_prompt if context_data else full_prompt)
                         attempts.append({'provider': 'gemini', 'status': 'success'})
-                        return _format_response(gm.text, 'gemini')
+                        return {'text': gm.text, 'provider_used': 'gemini', 'attempts': attempts}
                     except Exception as ge:
                         attempts.append({'provider': 'gemini', 'status': 'error', 'message': str(ge)[:200]})
                         last_err += f"; Gemini failed: {str(ge)[:200]}"
-                return _format_response(last_err, None)
+                return {'text': last_err, 'provider_used': None, 'attempts': attempts}
 
         # 2) Mistral primary
         if AI_PROVIDER == 'mistral':
             try:
                 mtxt = call_mistral(full_prompt)
                 attempts.append({'provider': 'mistral', 'status': 'success'})
-                return _format_response(mtxt, 'mistral')
+                return {'text': mtxt, 'provider_used': 'mistral', 'attempts': attempts}
             except Exception as me:
                 attempts.append({'provider': 'mistral', 'status': 'error', 'message': str(me)[:200]})
                 if GEMINI_API_KEY and gemini_model:
                     try:
                         gm = gemini_model.generate_content(short_prompt if context_data else full_prompt)
                         attempts.append({'provider': 'gemini', 'status': 'success'})
-                        return _format_response(gm.text, 'gemini')
+                        return {'text': gm.text, 'provider_used': 'gemini', 'attempts': attempts}
                     except Exception as ge:
                         attempts.append({'provider': 'gemini', 'status': 'error', 'message': str(ge)[:200]})
-                        return _format_response(f"Mistral failed: {str(me)[:200]}; Gemini failed: {str(ge)[:200]}", None)
-                return _format_response(f"Mistral failed: {str(me)}", None)
+                        return {'text': f"Mistral failed: {str(me)[:200]}; Gemini failed: {str(ge)[:200]}", 'provider_used': None, 'attempts': attempts}
+                return {'text': f"Mistral failed: {str(me)}", 'provider_used': None, 'attempts': attempts}
 
         # 3) Gemini primary
         if AI_PROVIDER == 'gemini':
             if not gemini_model:
                 attempts.append({'provider': 'gemini', 'status': 'unconfigured'})
-                return _format_response("AI insights unavailable: No valid API keys configured", None)
+                return {'text': "AI insights unavailable: No valid API keys configured", 'provider_used': None, 'attempts': attempts}
             response = gemini_model.generate_content(short_prompt if context_data else full_prompt)
             attempts.append({'provider': 'gemini', 'status': 'success'})
-            return _format_response(response.text, 'gemini')
+            return {'text': response.text, 'provider_used': 'gemini', 'attempts': attempts}
 
     except Exception as e:
         em = str(e)
         attempts.append({'provider': 'internal', 'status': 'error', 'message': em[:300]})
         if "API_KEY_INVALID" in em or "API key not valid" in em:
-            return _format_response("⚠️ API key invalid or expired. Please update your AI keys in the environment.", None)
-        return _format_response(f"Error generating AI insights: {em}", None)
+            return {'text': "⚠️ API key invalid or expired. Please update your AI keys in the environment.", 'provider_used': None, 'attempts': attempts}
+        return {'text': f"Error generating AI insights: {em}", 'provider_used': None, 'attempts': attempts}
 
 # API Endpoints
 
@@ -1083,15 +1044,19 @@ def apply_heuristic(request: ApplyHeuristicRequest):
     
     try:
         schedule_df = state.schedules[heuristic].copy()
-        # Ensure schedule contains Priority and Assignment_Type
+
+        # 1. Ensure Schedule Basics (Priority/Assignment)
+        # Only merge if missing - schedule usually has these correct now
         if 'Priority' not in schedule_df.columns or 'Assignment_Type' not in schedule_df.columns:
             try:
                 schedule_df = schedule_df.merge(
                     state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
-                    on='Operation_ID', how='left'
+                    on='Operation_ID', how='left', suffixes=('', '_origin')
                 )
-                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+                if 'Priority' not in schedule_df.columns and 'Priority_origin' in schedule_df.columns:
+                     schedule_df['Priority'] = schedule_df['Priority_origin']
+                if 'Assignment_Type' not in schedule_df.columns and 'Assignment_Type_origin' in schedule_df.columns:
+                     schedule_df['Assignment_Type'] = schedule_df['Assignment_Type_origin']
             except Exception:
                 pass
         # Ensure supporting fields (Proc_Time, Release, Transfer, Setup) are present for frontend
@@ -1128,63 +1093,21 @@ def apply_heuristic(request: ApplyHeuristicRequest):
             except Exception:
                 schedule_df['Release'] = schedule_df.get('Release_Time_Min', schedule_df.get('Release_Time', None))
                 schedule_df['Release_Time'] = schedule_df['Release']
-            # Ensure outsourced operations carry a valid Outsource_Cost by attempting
-            # to compute it from vendor table if the merged value is missing or zero.
-            try:
-                if 'Outsource_Cost' in schedule_df.columns and state.df_vendors is not None:
-                    # build a mapping for quick lookup
-                    vend = state.df_vendors.copy()
-                    # normalize vendor id column name if needed
-                    if 'Vendor_ID' in vend.columns:
-                        vend_map = vend.set_index('Vendor_ID').to_dict('index')
-                    else:
-                        vend_map = {}
-
-                    def _compute_vendor_cost(row):
-                        try:
-                            if str(row.get('Assignment_Type','')).upper() != 'OUTSOURCE':
-                                return row.get('Outsource_Cost', 0)
-                            existing = row.get('Outsource_Cost', None)
-                            if existing and float(existing) > 0.01:
-                                return existing
-                            # lookup vendor_ref from state.df_ops
-                            opid = row.get('Operation_ID')
-                            ref = None
-                            try:
-                                ref = state.df_ops.loc[state.df_ops['Operation_ID'] == opid, 'Vendor_Ref']
-                                if ref is not None and len(ref) > 0:
-                                    ref = str(ref.values[0])
-                                else:
-                                    ref = None
-                            except Exception:
-                                ref = None
-
-                            if not ref or ref not in vend_map:
-                                return existing if existing is not None else 0
-
-                            v = vend_map[ref]
-                            unit = float(v.get('Outsource_Unit_Cost', 0) or 0)
-                            transport = float(v.get('Transport_Cost', 0) or 0)
-                            q = 1
-                            try:
-                                q = float(state.df_ops.loc[state.df_ops['Operation_ID'] == opid, 'Quantity'].values[0])
-                            except Exception:
-                                q = float(row.get('Quantity', 1) or 1)
-
-                            q = max(q, 1)
-                            quality = float(v.get('Quality_Factor', 1) or 1)
-                            if quality == 0:
-                                quality = 1
-                            calc = ((unit * q) + transport) / quality
-                            return float(calc)
-                        except Exception:
-                            return row.get('Outsource_Cost', 0)
-
-                    schedule_df['Outsource_Cost'] = schedule_df.apply(_compute_vendor_cost, axis=1)
-            except Exception:
-                pass
         except Exception:
             pass
+            
+        # 6. Recalculate Critical Ratio for Display
+        try:
+            schedule_df['Critical_Ratio'] = schedule_df.apply(
+                lambda r: (
+                    (r.get('Due_Time_Min', 0) - r.get('Release_Time_Min', 0)) / 
+                    max(r.get('Total_Proc_Min', 1), 1)
+                ), 
+                axis=1
+            ).round(2)
+        except Exception:
+            schedule_df['Critical_Ratio'] = 0.0
+
         state.current_heuristic = heuristic
         
         state.activity_log.append({
@@ -1196,12 +1119,13 @@ def apply_heuristic(request: ApplyHeuristicRequest):
         return {
             "status": "success",
             "message": f"{heuristic} applied successfully",
-            "schedule": schedule_df.to_dict('records'),
+            "schedule": schedule_df.replace({np.nan: None}).to_dict('records'),
             "metrics": state.metrics.get(heuristic, {})
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/api/schedule/current")
 def get_current_schedule():
     """Get the currently applied schedule"""
@@ -1214,31 +1138,38 @@ def get_current_schedule():
     
     try:
         schedule_df = schedule.copy()
-        if 'Priority' not in schedule_df.columns or 'Assignment_Type' not in schedule_df.columns:
-            try:
-                schedule_df = schedule_df.merge(
-                    state.df_ops[['Operation_ID', 'Priority', 'Assignment_Type']],
-                    on='Operation_ID', how='left'
-                )
-                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
-            except Exception:
-                pass
+        
+        # 1. Re-Merge Data to be safe (Same logic as apply)
+        cols_to_merge = ['Operation_ID', 'Priority', 'Assignment_Type', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']
+        cols_to_merge = [c for c in cols_to_merge if c in state.df_ops.columns]
+        
+        for col in cols_to_merge:
+            if col != 'Operation_ID' and col in schedule_df.columns:
+                schedule_df.drop(columns=[col], inplace=True)
+        
+        schedule_df = schedule_df.merge(state.df_ops[cols_to_merge], on='Operation_ID', how='left')
 
-        # Add Release_Day for frontend OperationStatus display (minutes -> 8-hour workdays)
+        # 2. Fill Defaults
+        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+        
+        # 3. --- CRITICAL RATIO CALCULATION (Again) ---
         try:
-            MINUTES_PER_DAY = 8 * 60
-            if 'Release_Time_Min' in schedule_df.columns:
-                schedule_df['Release_Day'] = (pd.to_numeric(schedule_df['Release_Time_Min'], errors='coerce') / MINUTES_PER_DAY).round(3)
-            elif 'Release_Time' in schedule_df.columns:
-                schedule_df['Release_Day'] = (pd.to_numeric(schedule_df['Release_Time'], errors='coerce') / MINUTES_PER_DAY).round(3)
-            elif 'Release' in schedule_df.columns:
-                schedule_df['Release_Day'] = (pd.to_numeric(schedule_df['Release'], errors='coerce') / MINUTES_PER_DAY).round(3)
-            else:
-                # If no release info, keep None to avoid adding incorrect defaults
-                schedule_df['Release_Day'] = None
+            schedule_df['Critical_Ratio'] = schedule_df.apply(
+                lambda r: (
+                    (r.get('Due_Time_Min', 0) - r.get('Release_Time_Min', 0)) / 
+                    max(r.get('Total_Proc_Min', 1), 1)
+                ), 
+                axis=1
+            ).round(2)
         except Exception:
-            schedule_df['Release_Day'] = schedule_df.get('Release_Time_Min', None)
+            schedule_df['Critical_Ratio'] = 0.0
+        # ---------------------------------------------
+
+        # 4. Add Release_Day for frontend display (optional but helpful)
+        try:
+            schedule_df['Release_Day'] = (pd.to_numeric(schedule_df.get('Release_Time_Min', 0), errors='coerce') / 480).round(1)
+        except Exception:
+            pass
 
         # Backfill Outsource_Cost if missing for outsourced operations by consulting vendor table
         try:
@@ -1290,7 +1221,7 @@ def get_current_schedule():
 
         return {
             "heuristic": state.current_heuristic,
-            "schedule": schedule_df.to_dict('records'),
+            "schedule": schedule_df.replace({np.nan: None}).to_dict('records'),
             "metrics": state.metrics.get(state.current_heuristic, {})
         }
     except Exception as e:
@@ -1610,7 +1541,7 @@ def analyze_hourly_cost(request: dict):
                 op_inhouse_cost = (op['Total_Proc_Min'] / 60) * rate
                 op_outsource_cost = op.get('Outsource_Cost', 0)
                 
-                # Outsource if vendor cost < 85% of in-house cost (original rule)
+                # Outsource if vendor cost < 85% of in-house cost
                 if op_outsource_cost > 0 and op_outsource_cost < (op_inhouse_cost * 0.85):
                     outsourced_ops_list.append(op)
                     outsource_cost += op_outsource_cost

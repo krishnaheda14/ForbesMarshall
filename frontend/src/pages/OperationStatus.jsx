@@ -19,7 +19,8 @@ import {
   Button,
   TableSortLabel,
   TablePagination,
-  CircularProgress
+  CircularProgress,
+  Tooltip
 } from '@mui/material';
 import { Search as SearchIcon, Download as DownloadIcon, Refresh as RefreshIcon } from '@mui/icons-material';
 import useSchedulerStore from '../store/useSchedulerStore';
@@ -44,7 +45,13 @@ function OperationStatus() {
       setOrderBy('Due_Time');
       setOrder('asc');
     } else if (currentHeuristic === 'SPT') {
-      setOrderBy('Duration');
+      setOrderBy('Proc_Time');
+      setOrder('asc');
+    } else if (currentHeuristic === 'CR') {
+      setOrderBy('Critical_Ratio');
+      setOrder('asc');
+    } else if (currentHeuristic === 'PRIORITY') {
+      setOrderBy('Priority');
       setOrder('asc');
     } else {
       setOrderBy('Start_Time');
@@ -88,30 +95,18 @@ function OperationStatus() {
     setPage(0);
   };
 
-  const handleExport = () => {
-    if (!currentSchedule || currentSchedule.length === 0) return;
-    // Export without Proc_Time and Release columns per user request
-    const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Start_Time,End_Time,Status,Priority\n';
-    const csvRows = currentSchedule
-      .map((op) => {
-        const status = op.Tardiness > 0 ? 'Late' : 'On Time';
-        return `${op.Job_ID},${op.Operation_ID},${op.Machine_ID},${op.Start_Time},${op.End_Time},${status},${op.Priority}`;
-      })
-      .join('\n');
-    const blob = new Blob([csvHeader + csvRows], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `operations_${currentHeuristic || 'schedule'}.csv`;
-    a.click();
-  };
-  // --- SAFE FILTERING LOGIC (Fixes hooks ordering crash) ---
-
+  // Optimized Filtering & Sorting
   const processedOperations = useMemo(() => {
     const searchLower = (searchTerm || '').toLowerCase();
     
     const filtered = (currentSchedule || []).filter((op) => {
-      // We use String() and || '' to ensure we NEVER call toLowerCase on null
+      // 1. ALWAYS HIDE OUTSOURCED OPERATIONS
+      // If it's outsourced, we skip it entirely
+      if (op.Assignment_Type === 'OUTSOURCE' || op.Machine_ID === 'OUTSOURCE') {
+          return false;
+      }
+
+      // 2. Search Filter
       const job = String(op.Job_ID || '').toLowerCase();
       const opId = String(op.Operation_ID || '').toLowerCase();
       const machine = String(op.Machine_ID || '').toLowerCase();
@@ -119,25 +114,17 @@ function OperationStatus() {
       return job.includes(searchLower) || opId.includes(searchLower) || machine.includes(searchLower);
     });
 
+    // Sort Logic
     return filtered.sort((a, b) => {
-      // 1. Primary Sort: Priority (Always 1 -> 2 -> 3 -> 4)
-      const priorityA = parseInt(a.Priority || 3);
-      const priorityB = parseInt(b.Priority || 3);
-      
-      if (priorityA !== priorityB) {
-        return priorityA - priorityB;
-      }
-
-      // 2. Secondary Sort
       let aValue = a[orderBy];
       let bValue = b[orderBy];
 
-      if (orderBy === 'Duration') {
-        aValue = (a.End_Time || 0) - (a.Start_Time || 0);
-        bValue = (b.End_Time || 0) - (b.Start_Time || 0);
+      // Special handling for specific columns
+      if (orderBy === 'Priority') {
+         aValue = parseInt(a.Priority || 3);
+         bValue = parseInt(b.Priority || 3);
       }
 
-      // Handle nulls safely during sort
       if (aValue === undefined || aValue === null) aValue = -Infinity;
       if (bValue === undefined || bValue === null) bValue = -Infinity;
 
@@ -146,6 +133,28 @@ function OperationStatus() {
       return 0;
     });
   }, [currentSchedule, searchTerm, order, orderBy]);
+
+  const handleExport = () => {
+    if (!processedOperations || processedOperations.length === 0) return;
+    
+    // Exporting only the visible/filtered operations (No Outsourced)
+    const csvHeader = 'Job_ID,Operation_ID,Machine_ID,Priority,Start_Time,End_Time,Proc_Time,Critical_Ratio,Due_Time,Tardiness,Status\n';
+    
+    const csvRows = processedOperations
+      .map((op) => {
+        const status = op.Tardiness > 0 ? 'Late' : 'On Time';
+        const cr = op.Critical_Ratio !== undefined && op.Critical_Ratio !== null ? op.Critical_Ratio.toFixed(2) : '';
+        return `${op.Job_ID},${op.Operation_ID},${op.Machine_ID},${op.Priority},${op.Start_Time},${op.End_Time},${op.Proc_Time},${cr},${op.Due_Time},${op.Tardiness},${status}`;
+      })
+      .join('\n');
+
+    const blob = new Blob([csvHeader + csvRows], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `operations_${currentHeuristic || 'schedule'}.csv`;
+    a.click();
+  };
 
   if (!currentHeuristic) {
     return (
@@ -156,8 +165,9 @@ function OperationStatus() {
     );
   }
 
-  // Slice for Pagination
-  const visibleRows = processedOperations.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const visibleRows = rowsPerPage > 0 
+    ? processedOperations.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+    : processedOperations;
 
   const getPriorityColor = (priority) => {
     const p = parseInt(priority);
@@ -167,19 +177,20 @@ function OperationStatus() {
     return 'default';
   };
 
-  const SortableHeader = ({ id, label, align = 'left' }) => (
+  // Helper for Sortable Headers
+  const SortableHeader = ({ id, label, align = 'left', tooltip = '' }) => (
     <TableCell align={align} sortDirection={orderBy === id ? order : false}>
-      <TableSortLabel
-        active={orderBy === id}
-        direction={orderBy === id ? order : 'asc'}
-        onClick={() => handleRequestSort(id)}
-      >
-        <strong>{label}</strong>
-      </TableSortLabel>
+      <Tooltip title={tooltip} placement="top">
+        <TableSortLabel
+          active={orderBy === id}
+          direction={orderBy === id ? order : 'asc'}
+          onClick={() => handleRequestSort(id)}
+        >
+          <strong>{label}</strong>
+        </TableSortLabel>
+      </Tooltip>
     </TableCell>
   );
-
-  const showProcTime = currentHeuristic === 'SPT';
 
   return (
     <Container maxWidth="xl">
@@ -187,10 +198,10 @@ function OperationStatus() {
         <Box>
           <Typography variant="h1" gutterBottom>📋 Operation Status</Typography>
           <Typography variant="body1" color="text.secondary">
-            Viewing <strong>{processedOperations.length}</strong> operations.
+            Viewing <strong>{processedOperations.length}</strong> in-house operations.
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', gap: 1 }}>
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
           <Button 
             variant="outlined" 
             startIcon={loading ? <CircularProgress size={20} /> : <RefreshIcon />} 
@@ -211,8 +222,6 @@ function OperationStatus() {
             InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
           />
 
-          {/* CR column removed per request */}
-
           <TableContainer component={Paper} sx={{ maxHeight: 600 }}>
             <Table stickyHeader size="small">
               <TableHead>
@@ -222,11 +231,14 @@ function OperationStatus() {
                   <SortableHeader id="Priority" label="Priority" />
                   <TableCell><strong>Assignment</strong></TableCell>
                   <SortableHeader id="Machine_ID" label="Machine" />
-                  {showProcTime && <SortableHeader id="Total_Proc_Min" label="Proc Time (min)" align="right" />}
-                  <SortableHeader id="Release_Time_Min" label="Release" align="right" />
+                  
+                  <SortableHeader id="Proc_Time" label="Proc Time" align="right" tooltip="Processing Time (mins)" />
+                  <SortableHeader id="Critical_Ratio" label="CR" align="right" tooltip="Critical Ratio: (Due - Now) / Work Remaining" />
+                  <SortableHeader id="Release_Time" label="Release" align="right" />
+
                   <SortableHeader id="Start_Time" label="Start" align="right" />
                   <SortableHeader id="End_Time" label="End" align="right" />
-                  <SortableHeader id="Duration" label="Duration" align="right" />
+                  
                   <SortableHeader id="Due_Time" label="Due Time" align="right" />
                   <SortableHeader id="Tardiness" label="Tardiness" align="right" />
                   <TableCell><strong>Status</strong></TableCell>
@@ -235,7 +247,24 @@ function OperationStatus() {
               <TableBody>
                 {visibleRows.length > 0 ? (
                   visibleRows.map((op, index) => {
-                    const isOutsourced = op.Assignment_Type === 'OUTSOURCE' || op.Machine_ID === 'OUTSOURCE';
+                    // No need to check outsourced here, they are filtered out
+                    
+                    let crDisplay = '-';
+                    let crColor = 'inherit';
+                    if (op.Critical_Ratio !== undefined && op.Critical_Ratio !== null) {
+                        const crVal = parseFloat(op.Critical_Ratio);
+                        crDisplay = crVal.toFixed(2);
+                        if (crVal < 0) crColor = '#b71c1c';
+                        else if (crVal < 1) crColor = '#d32f2f';
+                        else if (crVal < 1.5) crColor = '#f57c00'; 
+                        else crColor = '#2e7d32'; 
+                    }
+
+                    const releaseTime = (op.Release_Time_Min ?? op.Release_Time ?? op.Release);
+                    const releaseDisplay = (releaseTime !== undefined && releaseTime !== null) 
+                        ? Number(releaseTime).toFixed(0) 
+                        : '-';
+
                     return (
                       <TableRow key={index} hover>
                         <TableCell>{op.Job_ID}</TableCell>
@@ -250,25 +279,22 @@ function OperationStatus() {
                         </TableCell>
                         <TableCell>
                           <Chip
-                            label={isOutsourced ? 'Outsourced' : 'In-House'}
-                            color={isOutsourced ? 'secondary' : 'primary'}
-                            size="small" variant={isOutsourced ? 'filled' : 'outlined'}
+                            label="In-House"
+                            color="primary"
+                            size="small" variant="outlined"
                           />
                         </TableCell>
                         <TableCell>{op.Machine_ID || '—'}</TableCell>
-                        {showProcTime && <TableCell align="right">{
-                          (op.Total_Proc_Min ?? op.Proc_Time ?? op.Scheduled_Proc_Time ?? op.proc_time) != null
-                            ? Number(op.Total_Proc_Min ?? op.Proc_Time ?? op.Scheduled_Proc_Time ?? op.proc_time).toFixed(0)
-                            : '—'
-                        }</TableCell>}
-                        <TableCell align="right">{
-                          (op.Release_Time_Min ?? op.Release_Time ?? op.Release ?? null) != null
-                            ? ((op.Release_Time_Min ?? op.Release_Time ?? op.Release).toFixed ? (op.Release_Time_Min ?? op.Release_Time ?? op.Release).toFixed(0) : (op.Release_Time_Min ?? op.Release_Time ?? op.Release))
-                            : '—'
-                        }</TableCell>
+                        
+                        <TableCell align="right">{op.Proc_Time?.toFixed(0) || '-'}</TableCell>
+                        <TableCell align="right" sx={{ color: crColor, fontWeight: 'bold' }}>
+                            {crDisplay}
+                        </TableCell>
+                        <TableCell align="right">{releaseDisplay}</TableCell>
+
                         <TableCell align="right">{op.Start_Time?.toFixed(0)}</TableCell>
                         <TableCell align="right">{op.End_Time?.toFixed(0)}</TableCell>
-                        <TableCell align="right">{(op.End_Time - op.Start_Time)?.toFixed(0)}</TableCell>
+                        
                         <TableCell align="right">{op.Due_Time?.toFixed(0)}</TableCell>
                         <TableCell align="right">
                           <span style={{ color: op.Tardiness > 0 ? '#d32f2f' : '#2e7d32', fontWeight: 'bold' }}>
@@ -288,7 +314,7 @@ function OperationStatus() {
                 ) : (
                   <TableRow>
                     <TableCell colSpan={12} align="center" sx={{ py: 4 }}>
-                      <Typography color="text.secondary">No operations found.</Typography>
+                      <Typography color="text.secondary">No in-house operations found.</Typography>
                     </TableCell>
                   </TableRow>
                 )}
