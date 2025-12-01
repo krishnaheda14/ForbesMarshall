@@ -2568,7 +2568,7 @@ def buy_machine(request: BuyMachineRequest):
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
                 schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
                 
-                metrics = calculate_metrics(schedule_df, state.df_machines)
+                metrics = calculate_metrics(schedule_df, state.df_ops, heur)
                 state.schedules[heur] = schedule_df
                 state.metrics[heur] = metrics
                 results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
@@ -2696,7 +2696,7 @@ def add_machine(request: AddMachineRequest):
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
                 schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
                 
-                metrics = calculate_metrics(schedule_df, state.df_machines)
+                metrics = calculate_metrics(schedule_df, state.df_ops, heur)
                 state.schedules[heur] = schedule_df
                 state.metrics[heur] = metrics
                 results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
@@ -2814,7 +2814,7 @@ def remove_machine(request: RemoveMachineRequest):
                 schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
                 schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
                 
-                metrics = calculate_metrics(schedule_df, state.df_machines)
+                metrics = calculate_metrics(schedule_df, state.df_ops, heur)
                 state.schedules[heur] = schedule_df
                 state.metrics[heur] = metrics
                 results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
