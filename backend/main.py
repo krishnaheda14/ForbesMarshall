@@ -30,6 +30,7 @@ from cnc_scheduler_core import (
     analyze_capacity_for_new_job
 )
 # from core.cp_sat_scheduler import solve_with_cpsat
+from ga_scheduler import run_ga_optimization
 
 # Import new Excel ingestion modules
 from excel_ingestion import ExcelIngestor, normalize_column_names
@@ -956,6 +957,13 @@ class CPSATRequest(BaseModel):
     time_limit_seconds: int = 30
     log: bool = False
 
+class GARequest(BaseModel):
+    population_size: int = 50
+    generations: int = 100
+    mutation_rate: float = 0.1
+    crossover_rate: float = 0.8
+    cost_threshold: float = 0.9
+
 @app.post("/api/schedule/cpsat")
 def run_cpsat(request: CPSATRequest):
     """Run CP-SAT optimization to obtain an improved/optimal schedule.
@@ -1029,6 +1037,115 @@ def run_cpsat(request: CPSATRequest):
             'schedule': schedule_df.to_dict('records'),
             'metrics': metrics
         }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/schedule/ga")
+def run_genetic_algorithm(request: GARequest):
+    """
+    Run Genetic Algorithm optimization
+    
+    Returns optimized schedule with full explainability:
+    - Best schedule found
+    - Performance metrics
+    - Evolution history (generation-by-generation improvement)
+    - Explainability data (why each operation was assigned, fitness breakdown)
+    """
+    if state.df_ops is None:
+        raise HTTPException(status_code=400, detail="Data not loaded")
+    
+    try:
+        # Run GA optimization
+        result = run_ga_optimization(
+            df_ops=state.df_ops.copy(),
+            df_machines=state.df_machines.copy(),
+            df_effective=state.df_effective.copy(),
+            df_penalties=state.df_penalties.copy(),
+            population_size=request.population_size,
+            generations=request.generations,
+            mutation_rate=request.mutation_rate,
+            crossover_rate=request.crossover_rate,
+            cost_threshold=request.cost_threshold
+        )
+        
+        # Extract results
+        schedule_df = result['schedule']
+        metrics = result['metrics']
+        evolution_history = result['evolution_history']
+        explainability = result['explainability']
+        
+        # Ensure schedule has all required fields for frontend
+        if not schedule_df.empty:
+            # Defensive merge: ensure state.df_ops has required columns
+            try:
+                ops_for_merge = state.df_ops.copy()
+                required_cols = {
+                    'Priority': 3,
+                    'Total_Proc_Min': 0,
+                    'Release_Time_Min': 0,
+                    'Due_Time_Min': 0
+                }
+                missing = [c for c in required_cols if c not in ops_for_merge.columns]
+                if missing:
+                    print(f"[GA] Warning: state.df_ops missing columns {missing} - filling with defaults")
+                for col, default in required_cols.items():
+                    if col not in ops_for_merge.columns:
+                        ops_for_merge[col] = default
+
+                schedule_df = schedule_df.merge(
+                    ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                    on='Operation_ID', how='left'
+                )
+
+            except Exception as e:
+                # If merge failed for any reason, fall back to adding safe defaults
+                import traceback
+                traceback.print_exc()
+                print(f"[GA] Merge failed: {e} - adding safe default Priority and Proc_Time columns")
+                if 'Operation_ID' not in schedule_df.columns:
+                    # Cannot align - ensure Operation_ID exists as index if possible
+                    schedule_df.reset_index(inplace=True)
+
+                schedule_df['Priority'] = 3
+                schedule_df['Proc_Time'] = schedule_df.get('Proc_Time', 0)
+
+            # Ensure Priority exists and is numeric
+            if 'Priority' not in schedule_df.columns:
+                schedule_df['Priority'] = 3
+            try:
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+            except Exception:
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+            schedule_df['Assignment_Type'] = schedule_df.get('Assignment_Type', 'IN_HOUSE')
+            schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+            if 'Total_Proc_Min' in schedule_df.columns and 'Proc_Time' not in schedule_df.columns:
+                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+            
+            # Add to state
+            state.schedules['GA'] = schedule_df
+            state.metrics['GA'] = metrics
+            state.current_heuristic = 'GA'
+            state.current_schedule = schedule_df
+        
+        # Log activity
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Computed GA',
+            'details': f"Pop={request.population_size} Gen={request.generations} Fitness={explainability['best_fitness']:.4f}"
+        })
+        
+        return {
+            'status': 'success',
+            'schedule': schedule_df.to_dict('records'),
+            'metrics': metrics,
+            'evolution_history': evolution_history,
+            'explainability': explainability
+        }
+    
     except Exception as e:
         import traceback
         traceback.print_exc()

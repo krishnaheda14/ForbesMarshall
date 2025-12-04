@@ -33,6 +33,7 @@ import {
   History as HistoryIcon,
   TrendingUp as CapexIcon,
   Assessment as AssessmentIcon,
+  Biotech as GAIcon,
 } from '@mui/icons-material';
 
 import HeuristicSelector from './HeuristicSelector';
@@ -52,6 +53,7 @@ const menuItems = [
   { text: 'Outsourcing', icon: <FactoryIcon />, path: '/outsourcing' },
   { text: 'CapEx Analysis', icon: <CapexIcon />, path: '/capex' },
   { text: 'Machine ROI', icon: <AssessmentIcon />, path: '/machine-roi' },
+  { text: 'GA Optimizer', icon: <GAIcon />, path: '/ga-optimizer' },
   { text: 'Activity Log', icon: <HistoryIcon />, path: '/activity-log' },
   { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
 ];

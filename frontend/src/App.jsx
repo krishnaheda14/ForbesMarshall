@@ -18,6 +18,7 @@ import OutsourcingAnalysis from './pages/OutsourcingAnalysis';
 import ActivityLog from './pages/ActivityLog';
 import CapexAnalysis from './pages/CapexAnalysis';
 import MachineROI from './pages/MachineROI';
+import GAOptimizer from './pages/GAOptimizer';
 
 const theme = createTheme({
   palette: {
@@ -124,6 +125,7 @@ function App() {
                   <Route path="/outsourcing" element={<OutsourcingAnalysis />} />
                   <Route path="/capex" element={<CapexAnalysis />} />
                   <Route path="/machine-roi" element={<MachineROI />} />
+                  <Route path="/ga-optimizer" element={<GAOptimizer />} />
                   <Route path="/activity-log" element={<ActivityLog />} />
                   <Route path="/settings" element={<Settings />} />
                 </Routes>
