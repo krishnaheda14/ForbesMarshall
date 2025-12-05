@@ -219,9 +219,6 @@ function Settings() {
           </Box>
           <Divider sx={{ mb: 2 }} />
 
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            Removing a machine will permanently delete it from the system and reassign all its tasks.
-          </Alert>
 
           <Grid container spacing={2}>
             <Grid item xs={12} md={8}>
