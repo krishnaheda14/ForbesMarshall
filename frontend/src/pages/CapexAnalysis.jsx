@@ -334,11 +334,7 @@ const CapexAnalysis = () => {
                     </Table>
                   </TableContainer>
 
-                  <Alert severity="info" sx={{ mt: 2 }}>
-                    <strong>How to use:</strong> Click "Buy" to clone the selected machine and add it to your fleet.
-                    This will create a new machine instance with a unique ID (e.g., M1_NEW1) and permanently
-                    update your machine_data.csv file. The new machine will be available for scheduling immediately.
-                  </Alert>
+                  
                 </CardContent>
               </Card>
             </>
