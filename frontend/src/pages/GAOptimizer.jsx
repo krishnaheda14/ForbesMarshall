@@ -46,7 +46,15 @@ const API_BASE = 'http://localhost:8001';
 
 function GAOptimizer() {
   const { enqueueSnackbar } = useSnackbar();
-  const { setMetrics, setCurrentSchedule } = useSchedulerStore();
+  const { 
+    setMetrics, 
+    setCurrentSchedule,
+    gaResults,
+    gaEvolutionHistory,
+    gaExplainability,
+    setGAResults,
+    clearGAResults,
+  } = useSchedulerStore();
 
   // GA Parameters
   const [populationSize, setPopulationSize] = useState(50);
@@ -54,13 +62,15 @@ function GAOptimizer() {
   const [mutationRate, setMutationRate] = useState(0.1);
   const [crossoverRate, setCrossoverRate] = useState(0.8);
 
-  // Results
+  // UI State
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [results, setResults] = useState(null);
-  const [evolutionHistory, setEvolutionHistory] = useState([]);
-  const [explainability, setExplainability] = useState(null);
   const [debugLogs, setDebugLogs] = useState([]);
+
+  // Use persisted results from store
+  const results = gaResults;
+  const evolutionHistory = gaEvolutionHistory;
+  const explainability = gaExplainability;
 
   const pushLog = (msg) => {
     const ts = new Date().toLocaleTimeString();
@@ -68,10 +78,16 @@ function GAOptimizer() {
     console.debug(`[GA Debug] ${ts} - ${msg}`);
   };
 
+  const handleReset = () => {
+    clearGAResults();
+    setDebugLogs([]);
+    enqueueSnackbar('GA results cleared. Ready for new optimization.', { variant: 'info' });
+  };
+
   const runGA = async () => {
     setLoading(true);
     setProgress(0);
-    setResults(null);
+    clearGAResults(); // Clear previous results before new run
     setDebugLogs([]);
 
     pushLog('Starting GA request')
@@ -98,9 +114,12 @@ function GAOptimizer() {
       clearInterval(progressInterval);
       setProgress(99);
 
-      setResults(response.data);
-      setEvolutionHistory(response.data.evolution_history || []);
-      setExplainability(response.data.explainability || {});
+      // Store results in Zustand store for persistence
+      setGAResults(
+        response.data,
+        response.data.evolution_history || [],
+        response.data.explainability || {}
+      );
 
       // Additional debug info
       const evoLen = (response.data.evolution_history || []).length;
@@ -320,13 +339,27 @@ function GAOptimizer() {
 
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
-      <Typography variant="h1" gutterBottom>
-        🧬 Genetic Algorithm Optimizer
-      </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        Evolution-based optimization that finds near-optimal schedules by
-        simulating natural selection
-      </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+        <Box>
+          <Typography variant="h1" gutterBottom>
+            Genetic Algorithm Optimizer
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            Evolution-based optimization that finds near-optimal schedules by
+            simulating natural selection
+          </Typography>
+        </Box>
+        {results && (
+          <Button
+            variant="outlined"
+            color="error"
+            onClick={handleReset}
+            sx={{ mt: 1 }}
+          >
+            Reset Results
+          </Button>
+        )}
+      </Box>
 
       {/* What is GA Section */}
       <Alert severity="info" icon={<ExplainIcon />} sx={{ mb: 3 }}>

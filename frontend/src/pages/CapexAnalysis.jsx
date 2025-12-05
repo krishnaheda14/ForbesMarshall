@@ -227,7 +227,7 @@ const CapexAnalysis = () => {
                           <TableCell align="right"><strong>Annual Savings</strong></TableCell>
                           <TableCell align="right"><strong>Payback (Years)</strong></TableCell>
                           <TableCell align="right"><strong>Jobs</strong></TableCell>
-                          <TableCell align="center"><strong>Action</strong></TableCell>
+                          {/* Action column (Buy) removed temporarily */}
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -277,18 +277,7 @@ const CapexAnalysis = () => {
                                   {rec.total_proc_hours.toFixed(1)} hrs
                                 </Typography>
                               </TableCell>
-                              <TableCell align="center">
-                                <Button
-                                  variant="contained"
-                                  color={rec.savings > 0 ? 'success' : 'error'}
-                                  size="small"
-                                  startIcon={buyingMachine === rec.machine_id ? <CircularProgress size={16} /> : <ShoppingCartIcon />}
-                                  onClick={() => handleBuyMachine(rec.machine_id)}
-                                  disabled={buyingMachine !== null || rec.savings <= 0}
-                                >
-                                  {rec.savings > 0 ? 'Buy' : 'No ROI'}
-                                </Button>
-                              </TableCell>
+                              {/* Buy button removed temporarily */}
                             </TableRow>
                             {/* Expandable Calculation Details */}
                             {rec.calculation_details && (

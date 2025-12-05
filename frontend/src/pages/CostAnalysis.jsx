@@ -281,7 +281,7 @@ function CostAnalysis() {
   return (
     <Container maxWidth="xl">
       <Typography variant="h1" gutterBottom>
-        💰 Hourly Rate vs Cost Analysis
+        Hourly Rate vs Cost Analysis
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
         Analyze how hourly labor rates affect in-house costs and outsourcing decisions

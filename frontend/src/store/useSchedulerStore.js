@@ -15,6 +15,11 @@ const useSchedulerStore = create(
       schedules: {},
       metrics: {},
       
+      // GA state
+      gaResults: null,
+      gaEvolutionHistory: [],
+      gaExplainability: null,
+      
       // UI state
       loading: false,
       error: null,
@@ -49,6 +54,18 @@ const useSchedulerStore = create(
         activityLog: [...state.activityLog, activity]
       })),
       
+      setGAResults: (results, evolutionHistory, explainability) => set({
+        gaResults: results,
+        gaEvolutionHistory: evolutionHistory,
+        gaExplainability: explainability,
+      }),
+      
+      clearGAResults: () => set({
+        gaResults: null,
+        gaEvolutionHistory: [],
+        gaExplainability: null,
+      }),
+      
       clearError: () => set({ error: null }),
       
       reset: () => set({
@@ -73,6 +90,9 @@ const useSchedulerStore = create(
         currentSchedule: state.currentSchedule,
         schedules: state.schedules,
         metrics: state.metrics,
+        gaResults: state.gaResults,
+        gaEvolutionHistory: state.gaEvolutionHistory,
+        gaExplainability: state.gaExplainability,
       }),
     }
   )

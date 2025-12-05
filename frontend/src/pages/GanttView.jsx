@@ -107,7 +107,7 @@ function GanttView() {
     return (
       <Container maxWidth="xl">
         <Typography variant="h1" gutterBottom>
-          📈 Gantt Chart
+          Gantt Chart
         </Typography>
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 8 }}>
           <CircularProgress size={60} sx={{ mb: 3 }} />

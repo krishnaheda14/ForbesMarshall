@@ -25,7 +25,7 @@ import {
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import useSchedulerStore from '../store/useSchedulerStore';
-import { addMachine, removeMachine } from '../services/api';
+import { removeMachine } from '../services/api';
 
 function Settings() {
   const { enqueueSnackbar } = useSnackbar();
@@ -70,7 +70,7 @@ function Settings() {
         setMetrics(result.results);
       }
       
-      enqueueSnackbar(result.message || 'Machine added successfully!', { variant: 'success' });
+      enqueueSnackbar(result.message || 'Machine added successfully! Reloading to show updated schedule...', { variant: 'success' });
       
       // Reset form
       setNewMachine({
@@ -84,12 +84,13 @@ function Settings() {
         purchase_price: 50000.0,
       });
       
-      // Refresh schedule if available
-      if (result.best_heuristic) {
-        setTimeout(() => {
-          window.location.reload();
-        }, 1500);
-      }
+      // Trigger Gantt chart refresh by dispatching custom event before reload
+      window.dispatchEvent(new Event('breakdown-updated'));
+      
+      // Reload page to refresh all views including Gantt chart
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
     } catch (error) {
       enqueueSnackbar(`Error: ${error.response?.data?.detail || error.message}`, { variant: 'error' });
     } finally {
@@ -207,116 +208,7 @@ function Settings() {
         </CardContent>
       </Card>
 
-      {/* Add Machine */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
-          <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-            <AddIcon sx={{ mr: 1, color: '#10b981' }} />
-            <Typography variant="h6">Add New Machine</Typography>
-          </Box>
-          <Divider sx={{ mb: 2 }} />
-
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                label="Machine ID *"
-                value={newMachine.machine_id}
-                onChange={(e) => setNewMachine({ ...newMachine, machine_id: e.target.value })}
-                placeholder="e.g., M10"
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                label="Machine Type *"
-                value={newMachine.machine_type}
-                onChange={(e) => setNewMachine({ ...newMachine, machine_type: e.target.value })}
-                placeholder="e.g., CNC_Lathe"
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Operation Types *"
-                value={newMachine.op_types}
-                onChange={(e) => setNewMachine({ ...newMachine, op_types: e.target.value })}
-                placeholder="Comma-separated, e.g., Turning,Facing,Drilling"
-                helperText="Enter operation types separated by commas"
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Speed Factor"
-                value={newMachine.speed_factor}
-                onChange={(e) => setNewMachine({ ...newMachine, speed_factor: parseFloat(e.target.value) })}
-                inputProps={{ min: 0.1, max: 10, step: 0.1 }}
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Hourly Rate ($)"
-                value={newMachine.hourly_rate}
-                onChange={(e) => setNewMachine({ ...newMachine, hourly_rate: parseFloat(e.target.value) })}
-                inputProps={{ min: 0, step: 1 }}
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Maintenance Cost ($)"
-                value={newMachine.maintenance_cost}
-                onChange={(e) => setNewMachine({ ...newMachine, maintenance_cost: parseFloat(e.target.value) })}
-                inputProps={{ min: 0, step: 10 }}
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Energy Cost/Hour ($)"
-                value={newMachine.energy_cost_per_hour}
-                onChange={(e) => setNewMachine({ ...newMachine, energy_cost_per_hour: parseFloat(e.target.value) })}
-                inputProps={{ min: 0, step: 1 }}
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Purchase Price ($)"
-                value={newMachine.purchase_price}
-                onChange={(e) => setNewMachine({ ...newMachine, purchase_price: parseFloat(e.target.value) })}
-                inputProps={{ min: 0, step: 1000 }}
-                size="small"
-              />
-            </Grid>
-          </Grid>
-
-          <Button
-            variant="contained"
-            color="success"
-            startIcon={<AddIcon />}
-            onClick={handleAddMachine}
-            disabled={loading}
-            sx={{ mt: 2 }}
-          >
-            Add Machine
-          </Button>
-        </CardContent>
-      </Card>
+      {/* Add Machine UI removed temporarily */}
 
       {/* Remove Machine */}
       <Card sx={{ mb: 3 }}>

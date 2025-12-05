@@ -173,6 +173,15 @@ export const updateOutsourcingPolicy = async (costThreshold) => {
   return response.data;
 };
 
+// Adjust due date for a job (delta_days can be negative to reduce due date)
+export const adjustDueDate = async (jobId, deltaDays) => {
+  const response = await api.post('/api/data/adjust-due-date', {
+    job_id: jobId,
+    delta_days: Number(deltaDays),
+  });
+  return response.data;
+};
+
 // AI Insights
 export const getAIInsights = async (prompt, contextData = null) => {
   const response = await api.post('/api/ai/insights', {

@@ -126,7 +126,7 @@ function OutsourcingAnalysis() {
   if (!currentHeuristic || !hasScheduleData) {
     return (
       <Container maxWidth="xl">
-        <Typography variant="h1" gutterBottom>💰 Outsourcing Cost Analysis</Typography>
+        <Typography variant="h1" gutterBottom>Outsourcing Cost Analysis</Typography>
         <Alert severity="info">
           No schedule data available. Please compute and apply a heuristic first from the Dashboard.
         </Alert>
@@ -172,7 +172,7 @@ function OutsourcingAnalysis() {
   return (
     <Container maxWidth="xl">
       <Box sx={{ mb: 4 }}>
-        <Typography variant="h1" gutterBottom>💰 Outsourcing Cost Analysis</Typography>
+        <Typography variant="h1" gutterBottom>Outsourcing Cost Analysis</Typography>
         <Typography variant="body1" color="text.secondary">
           Comprehensive analysis of make-or-buy decisions for {currentHeuristic} heuristic
         </Typography>

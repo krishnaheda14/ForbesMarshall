@@ -40,7 +40,59 @@ def parse_maintenance(maintenance_str):
         return []
 
 def get_eligible_machines(op_type):
-    """Get list of machines eligible for an operation type"""
+    """Get list of machines eligible for an operation type.
+
+    Strategy:
+    - First try to read `data/machine_data.csv` (project data folder) and find machines
+      whose `Op_Types` (or similar) column mentions the requested `op_type`.
+    - If that fails (file missing or parse error), fall back to the small static mapping.
+
+    This allows dynamically added machines (e.g. M3_NEW2) to advertise supported
+    operation types and be picked up by the scheduler without requiring a code change.
+    """
+    try:
+        import os
+        import pandas as pd
+
+        # Resolve likely data file paths relative to this module (backend folder)
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        # Project root is one level up (same as backend/main.py logic)
+        project_root = os.path.dirname(module_dir)
+        candidates = [
+            os.path.join(project_root, 'data', 'machine_data.csv'),
+            os.path.join(module_dir, '..', 'data', 'machine_data.csv'),
+            os.path.join(module_dir, 'data', 'machine_data.csv')
+        ]
+
+        op_up = str(op_type).upper()
+        machines_found = []
+
+        for path in candidates:
+            try:
+                if not os.path.exists(path):
+                    continue
+                df = pd.read_csv(path)
+                # Normalize column names
+                df.columns = df.columns.str.replace(' ', '_')
+                # Prefer 'Op_Types' column if present
+                if 'Op_Types' in df.columns:
+                    mask = df['Op_Types'].astype(str).str.upper().str.contains(op_up, na=False)
+                    machines_found = df.loc[mask, 'Machine_ID'].astype(str).tolist()
+                    if machines_found:
+                        return machines_found
+                # Try other common names
+                for col in ('Op_Type', 'OpTypes', 'OpType', 'Op_Types'):
+                    if col in df.columns:
+                        mask = df[col].astype(str).str.upper().str.contains(op_up, na=False)
+                        machines_found = df.loc[mask, 'Machine_ID'].astype(str).tolist()
+                        if machines_found:
+                            return machines_found
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Fallback static mapping (legacy)
     mapping = {
         'MILLING': ['M1', 'M3', 'M4'],
         'TURNING': ['M6', 'M9'],
@@ -109,8 +161,11 @@ def calculate_metrics(schedule_df, df_ops, heuristic_name='SPT'):
     if schedule_df.empty:
         return {}
 
-    makespan = schedule_df['End_Time'].max() / (8 * 60)
-    tardiness = schedule_df['Tardiness'].sum() / (8 * 60)
+    # Use 24-hour days (1440 minutes) for consistency with load_all_data
+    MINUTES_PER_DAY = 24 * 60  # 1440 minutes
+    
+    makespan = schedule_df['End_Time'].max() / MINUTES_PER_DAY
+    tardiness = schedule_df['Tardiness'].sum() / MINUTES_PER_DAY
     late_ops = (schedule_df['Tardiness'] > 0).sum()
     total_ops = len(schedule_df)
     on_time_pct = ((total_ops - late_ops) / total_ops * 100) if total_ops > 0 else 0

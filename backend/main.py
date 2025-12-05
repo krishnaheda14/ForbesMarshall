@@ -264,25 +264,29 @@ def load_all_data(sample_size=None):
         (df_ops_vendor['Outsource_Unit_Cost'] * df_ops_vendor['Quantity']) + df_ops_vendor['Transport_Cost']
     ) / df_ops_vendor['Quality_Factor']
 
-    df_ops_vendor['Outsource_Time_Min'] = df_ops_vendor['Outsource_Lead_Time_(Days)'] * 8 * 60
+    df_ops_vendor['Outsource_Time_Min'] = df_ops_vendor['Outsource_Lead_Time_(Days)'] * 24 * 60
 
     df_ops = df_ops.merge(
         df_ops_vendor[['Operation_ID', 'Outsource_Cost', 'Outsource_Time_Min']],
         on='Operation_ID', how='left'
     )
 
-    # --- CRITICAL DATA FIX: Correcting Impossible Deadlines ---
-    MINUTES_PER_DAY = 15*60
+    # --- CRITICAL DATA FIX: Correcting Impossible Deadlines & Adding Buffer ---
+    # Use standard 24-hour days for time calculations
+    MINUTES_PER_DAY = 24*60  # 1440 minutes per day
     df_ops['Release_Time_Min'] = df_ops['Release_Day'] * MINUTES_PER_DAY
     
-    # Logic: If Due_Day is smaller than Release_Day, assume it means "Lead Time" (Duration)
-    # Example: Release Day 33, Due Day 5 --> Real Due Date = Day 38
+    # Due_Day in CSV is already an absolute day number (not duration)
+    # If Due_Day < Release_Day, it's a data error - treat Due_Day as lead time in that case
     df_ops['Due_Time_Min'] = df_ops.apply(
         lambda row: (row['Release_Day'] + row['Due_Day']) * MINUTES_PER_DAY 
                     if row['Due_Day'] < row['Release_Day'] 
                     else row['Due_Day'] * MINUTES_PER_DAY, 
         axis=1
     )
+    
+    # No additional buffer needed - user has already manually increased due dates for half the jobs
+    # BUFFER_DAYS = 0
     # ----------------------------------------------------------
     
     df_ops['Outsource_Cost'].fillna(0, inplace=True)
@@ -297,6 +301,49 @@ def load_all_data(sample_size=None):
         df_machines['Maintenance_Window'] = None
 
     return df_ops, df_machines, df_effective, df_penalties, df_vendors
+
+
+def prepare_ops_for_merge(ops_df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ops_df with required columns guaranteed to exist.
+
+    This protects merge operations across many endpoints where the CSV
+    may lack optional columns. Fills sensible defaults to avoid KeyErrors.
+    """
+    if ops_df is None:
+        return pd.DataFrame()
+
+    ops = ops_df.copy()
+
+    # Ensure common columns exist with safe defaults
+    defaults = {
+        'Priority': 3,
+        'Total_Proc_Min': 0,
+        'Release_Time_Min': 0,
+        'Due_Time_Min': 0,
+        'Job_ID': '',
+        'Op_Type': 'UNKNOWN',
+        'Setup_Time': 0,
+        'Transfer_Min': 0,
+        'Proc_Time': 0
+    }
+
+    for col, val in defaults.items():
+        if col not in ops.columns:
+            ops[col] = val
+
+    # Normalize numeric columns
+    numeric_cols = ['Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min', 'Setup_Time', 'Transfer_Min', 'Proc_Time']
+    for num_col in numeric_cols:
+        try:
+            ops[num_col] = pd.to_numeric(ops[num_col], errors='coerce').fillna(0)
+        except Exception:
+            ops[num_col] = ops[num_col].apply(lambda x: float(x) if isinstance(x, (int, float)) else 0)
+
+    # Ensure stringy columns
+    ops['Op_Type'] = ops['Op_Type'].fillna('UNKNOWN').astype(str)
+    ops['Job_ID'] = ops['Job_ID'].fillna('').astype(str)
+
+    return ops
 
 def get_ai_insights(prompt: str, context_data: Optional[Dict] = None):
     """Generate AI insights using OpenRouter, Mistral, or Gemini with safe fallbacks.
@@ -672,10 +719,10 @@ def get_schedule_sample():
             "max": float(max_tardiness_min),
             "average": float(avg_tardiness_min)
         },
-        "tardiness_stats_days_8hr": {
-            "total": float(total_tardiness_min / 480),
-            "max": float(max_tardiness_min / 480),
-            "average": float(avg_tardiness_min / 480)
+        "tardiness_stats_days_24hr": {
+            "total": float(total_tardiness_min / 1440),
+            "max": float(max_tardiness_min / 1440),
+            "average": float(avg_tardiness_min / 1440)
         },
         "late_operation_samples": late_samples,
         "ontime_operation_samples": ontime_samples
@@ -782,15 +829,28 @@ def compute_heuristic(request: ComputeHeuristicRequest):
             schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
             
             # Merge scheduler output with supporting fields from the original ops
-            # but do NOT merge `Assignment_Type` from loaded data — keep the
-            # scheduler's Assignment_Type authoritative.
-            schedule_df = schedule_df.merge(
-                state.df_ops[[
-                    'Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min'
-                ]],
-                on='Operation_ID', how='left'
-            )
-            schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+            # Use helper to ensure required columns exist on the ops dataframe
+            try:
+                ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                schedule_df = schedule_df.merge(
+                    ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                    on='Operation_ID', how='left'
+                )
+            except Exception:
+                # Fall back to best-effort merge to avoid hard failure
+                try:
+                    schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+                except Exception:
+                    pass
+
+            # Ensure Priority exists and is numeric
+            if 'Priority' not in schedule_df.columns:
+                schedule_df['Priority'] = 3
+            else:
+                try:
+                    schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                except Exception:
+                    schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
             schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
             
             # Add Proc_Time field: use Total_Proc_Min from original data (shows actual processing time for all ops)
@@ -892,17 +952,33 @@ def compute_all_heuristics():
                 
                 # Merge in Priority, Assignment_Type, Proc and Release fields so frontend can display them
                 # Keep scheduler's Assignment_Type; merge other supporting fields
-                schedule_df = schedule_df.merge(
-                    state.df_ops[[
-                        'Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min'
-                    ]],
-                    on='Operation_ID', how='left'
-                )
-                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
-                
-                # Add Proc_Time field: use Total_Proc_Min from original data
-                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                try:
+                    ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                    schedule_df = schedule_df.merge(
+                        ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                        on='Operation_ID', how='left'
+                    )
+                except Exception:
+                    try:
+                        schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+                    except Exception:
+                        pass
+
+                if 'Priority' not in schedule_df.columns:
+                    schedule_df['Priority'] = 3
+                else:
+                    try:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                    except Exception:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+                if 'Assignment_Type' not in schedule_df.columns:
+                    schedule_df['Assignment_Type'] = 'IN_HOUSE'
+                else:
+                    schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+                # Add Proc_Time field: prefer Total_Proc_Min, fallback to Scheduled_Proc_Time
+                schedule_df['Proc_Time'] = schedule_df.get('Total_Proc_Min', schedule_df.get('Scheduled_Proc_Time', 0))
 
                 # Expose `Release` and `Release_Time` using Release_Time_Min for frontend convenience
                 try:
@@ -988,14 +1064,28 @@ def run_cpsat(request: CPSATRequest):
         schedule_df = pd.DataFrame(result.schedule)
         # Merge Priority, Assignment_Type and release/proc fields into CPSAT schedule if available
         try:
-            schedule_df = schedule_df.merge(
-                state.df_ops[[
-                    'Operation_ID', 'Priority', 'Assignment_Type', 'Release_Time_Min', 'Due_Time_Min', 'Total_Proc_Min'
-                ]],
-                on='Operation_ID', how='left'
-            )
-            schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-            schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+            try:
+                ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                schedule_df = schedule_df.merge(
+                    ops_for_merge[['Operation_ID', 'Priority', 'Assignment_Type', 'Release_Time_Min', 'Due_Time_Min', 'Total_Proc_Min']],
+                    on='Operation_ID', how='left'
+                )
+            except Exception:
+                schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+
+            if 'Priority' not in schedule_df.columns:
+                schedule_df['Priority'] = 3
+            else:
+                try:
+                    schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                except Exception:
+                    schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+            if 'Assignment_Type' not in schedule_df.columns:
+                schedule_df['Assignment_Type'] = 'IN_HOUSE'
+            else:
+                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
             # Ensure Proc_Time is visible (from Total_Proc_Min) and expose Release fields
             if 'Total_Proc_Min' in schedule_df.columns:
                 schedule_df['Proc_Time'] = pd.to_numeric(schedule_df['Total_Proc_Min'], errors='coerce').fillna(0)
@@ -1266,8 +1356,14 @@ def get_current_schedule():
         
         schedule_df = schedule_df.merge(state.df_ops[cols_to_merge], on='Operation_ID', how='left')
 
-        # 2. Fill Defaults
-        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+        # 2. Fill Defaults (be defensive in case 'Priority' wasn't present in source)
+        if 'Priority' not in schedule_df.columns:
+            schedule_df['Priority'] = 3
+        else:
+            try:
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+            except Exception:
+                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
         
         # 3. --- CRITICAL RATIO CALCULATION (Again) ---
         try:
@@ -1284,7 +1380,7 @@ def get_current_schedule():
 
         # 4. Add Release_Day for frontend display (optional but helpful)
         try:
-            schedule_df['Release_Day'] = (pd.to_numeric(schedule_df.get('Release_Time_Min', 0), errors='coerce') / 480).round(1)
+            schedule_df['Release_Day'] = (pd.to_numeric(schedule_df.get('Release_Time_Min', 0), errors='coerce') / 1440).round(1)
         except Exception:
             pass
 
@@ -1855,11 +1951,38 @@ def analyze_machine_roi():
         # Filter in-house operations only (exclude outsourced)
         in_house = schedule_df[schedule_df['Machine_ID'] != 'OUTSOURCE'].copy()
         
+        # Merge with df_ops to get Op_Type and Job_ID if missing
+        if 'Op_Type' not in in_house.columns or 'Job_ID' not in in_house.columns:
+            try:
+                ops_to_merge = prepare_ops_for_merge(state.df_ops)
+                # Ensure Operation_ID exists on both sides; if not, this will raise and be handled
+                in_house = in_house.merge(
+                    ops_to_merge[['Operation_ID', 'Job_ID', 'Op_Type']],
+                    on='Operation_ID',
+                    how='left'
+                )
+            except Exception as e:
+                print(f"Warning: Could not merge Op_Type/Job_ID for machine ROI analysis: {e}")
+
+        # Guarantee required columns exist and provide safe defaults
+        if 'Op_Type' not in in_house.columns:
+            in_house['Op_Type'] = 'UNKNOWN'
+
+        if 'Job_ID' not in in_house.columns:
+            # If Operation_ID exists, try to extract a Job_ID-like prefix, else fallback to empty string
+            if 'Operation_ID' in in_house.columns:
+                try:
+                    in_house['Job_ID'] = in_house['Operation_ID'].astype(str).str.split('_').str[0].fillna('')
+                except Exception:
+                    in_house['Job_ID'] = ''
+            else:
+                in_house['Job_ID'] = ''
+        
         # Analysis parameters
         hourly_labor_rate = 30  # $/hour
         energy_cost_rate = 0.10  # 10% of labor cost
         annual_hours = 2080  # Standard work year (40 hrs/week * 52 weeks)
-        makespan_days = schedule_df['End_Time'].max() / 480 if not schedule_df.empty else 1
+        makespan_days = schedule_df['End_Time'].max() / 1440 if not schedule_df.empty else 1
         
         # Calculate metrics per machine
         machine_metrics = []
@@ -2129,6 +2252,163 @@ def unload_data():
             "message": "Dataset unloaded successfully"
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/data/adjust-due-date')
+def adjust_due_date(request: dict):
+    """Adjust Due_Day for a job by delta_days (can be negative) and recompute schedules.
+
+    Request: { job_id: str, delta_days: int }
+    """
+    if state.df_ops is None:
+        raise HTTPException(status_code=400, detail="Operations dataset not loaded")
+
+    job_id = request.get('job_id')
+    delta_days = request.get('delta_days')
+    if not job_id or delta_days is None:
+        raise HTTPException(status_code=400, detail="job_id and delta_days are required")
+
+    try:
+        # Find rows for job
+        mask = state.df_ops['Job_ID'].astype(str) == str(job_id)
+        if mask.sum() == 0:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        # Adjust Due_Day and recompute Due_Time_Min for affected rows
+        # Use 24-hour days = 1440 minutes
+        MINUTES_PER_DAY = 24 * 60
+        state.df_ops.loc[mask, 'Due_Day'] = state.df_ops.loc[mask, 'Due_Day'].astype(float) + float(delta_days)
+
+        def compute_due_min(row):
+            try:
+                rd = float(row['Release_Day']) if pd.notna(row['Release_Day']) else 0
+                dd = float(row['Due_Day']) if pd.notna(row['Due_Day']) else 0
+                # If Due_Day appears smaller than Release_Day, treat as lead time
+                if dd < rd:
+                    return (rd + dd) * MINUTES_PER_DAY
+                return dd * MINUTES_PER_DAY
+            except Exception:
+                return 0
+
+        state.df_ops.loc[mask, 'Due_Time_Min'] = state.df_ops.loc[mask].apply(compute_due_min, axis=1)
+
+        # Persist changes to CSV
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        csv_path = os.path.join(base_dir, 'data', 'jobs_dataset.csv')
+        try:
+            state.df_ops.to_csv(csv_path, index=False)
+        except Exception:
+            # non-fatal: continue even if saving fails
+            pass
+
+        # Rebuild effective times (unchanged), then recompute heuristics similarly to other endpoints
+        effective_times = []
+        for idx, op in state.df_ops.iterrows():
+            op_type = op.get('Op_Type')
+            eligible = get_eligible_machines(op_type)
+            for mid in eligible:
+                mrow = state.df_machines[state.df_machines['Machine_ID'] == mid]
+                if len(mrow) > 0:
+                    speed_factor = mrow.iloc[0]['Speed_Factor']
+                    effective_proc_time = op.get('Total_Proc_Min', 0) / speed_factor if speed_factor else op.get('Total_Proc_Min', 0)
+                    total_time = op.get('Setup_Time', 0) + effective_proc_time + op.get('Transfer_Min', 0)
+                    effective_times.append({
+                        'Operation_ID': op['Operation_ID'],
+                        'Machine_ID': mid,
+                        'Effective_Proc_Time': effective_proc_time,
+                        'Total_Time': total_time
+                    })
+        state.df_effective = pd.DataFrame(effective_times)
+
+        heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
+        results = {}
+        best_heuristic = None
+        best_score = float('inf')
+        best_makespan = float('inf')
+
+        for heur in heuristics:
+            df_ops_for_sched = state.df_ops.copy()
+            try:
+                for idx, op in df_ops_for_sched.iterrows():
+                    try:
+                        decision = make_or_buy_decision(op, state.df_effective, cost_threshold=state.cost_threshold)
+                    except TypeError:
+                        decision = make_or_buy_decision(op, state.df_effective, state.cost_threshold)
+                    if isinstance(decision, (list, tuple)) and len(decision) > 0 and str(decision[0]).upper() == 'OUTSOURCE':
+                        df_ops_for_sched.at[idx, 'Assignment_Type'] = 'OUTSOURCE'
+            except Exception:
+                pass
+
+            scheduler = CNCScheduler(
+                df_ops_for_sched,
+                state.df_machines.copy(),
+                state.df_effective.copy(),
+                state.df_penalties.copy()
+            )
+
+            schedule = scheduler.run_scheduling(heuristic=heur, verbose=False)
+            if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
+                schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
+                try:
+                    ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                    schedule_df = schedule_df.merge(
+                        ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                        on='Operation_ID', how='left'
+                    )
+                except Exception:
+                    try:
+                        schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+                    except Exception:
+                        pass
+
+                if 'Priority' not in schedule_df.columns:
+                    schedule_df['Priority'] = 3
+                else:
+                    try:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                    except Exception:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+                if 'Assignment_Type' not in schedule_df.columns:
+                    schedule_df['Assignment_Type'] = 'IN_HOUSE'
+                else:
+                    schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+                schedule_df['Proc_Time'] = schedule_df.get('Total_Proc_Min', schedule_df.get('Scheduled_Proc_Time', 0))
+                metrics = calculate_metrics(schedule_df, state.df_ops, heur)
+                state.schedules[heur] = schedule_df
+                state.metrics[heur] = metrics
+                results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
+
+                cur_tard = metrics.get('Total_Tardiness_Days', float('inf'))
+                cur_mk = metrics.get('Makespan_Days', float('inf'))
+                if cur_tard < best_score or (cur_tard == best_score and cur_mk < best_makespan):
+                    best_score = cur_tard
+                    best_makespan = cur_mk
+                    best_heuristic = heur
+
+        if best_heuristic and best_heuristic in state.schedules:
+            state.current_heuristic = best_heuristic
+            state.current_schedule = state.schedules[best_heuristic]
+
+        state.activity_log.append({
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'Adjust Due Date',
+            'details': f"Adjusted due date for {job_id} by {delta_days} days and recomputed heuristics"
+        })
+
+        return {
+            'status': 'success',
+            'message': f'Adjusted due dates for {job_id} by {delta_days} days',
+            'best_heuristic': best_heuristic,
+            'results': {k: {'metrics': v['metrics']} for k, v in results.items()}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/job/add")
@@ -2582,7 +2862,8 @@ def buy_machine(request: BuyMachineRequest):
         heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
         results = {}
         best_heuristic = None
-        best_score = float('inf')
+        best_score = float('inf')  # best total tardiness (days)
+        best_makespan = float('inf')
         
         for heur in heuristics:
             df_ops_for_sched = state.df_ops.copy()
@@ -2608,13 +2889,32 @@ def buy_machine(request: BuyMachineRequest):
             
             if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
                 schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
-                schedule_df = schedule_df.merge(
-                    state.df_ops[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
-                    on='Operation_ID', how='left'
-                )
-                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
-                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                try:
+                    ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                    schedule_df = schedule_df.merge(
+                        ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                        on='Operation_ID', how='left'
+                    )
+                except Exception:
+                    try:
+                        schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+                    except Exception:
+                        pass
+
+                if 'Priority' not in schedule_df.columns:
+                    schedule_df['Priority'] = 3
+                else:
+                    try:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                    except Exception:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+                if 'Assignment_Type' not in schedule_df.columns:
+                    schedule_df['Assignment_Type'] = 'IN_HOUSE'
+                else:
+                    schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+                schedule_df['Proc_Time'] = schedule_df.get('Total_Proc_Min', schedule_df.get('Scheduled_Proc_Time', 0))
                 
                 metrics = calculate_metrics(schedule_df, state.df_ops, heur)
                 state.schedules[heur] = schedule_df
@@ -2622,8 +2922,12 @@ def buy_machine(request: BuyMachineRequest):
                 results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
                 
                 # Track best heuristic by makespan
-                if metrics.get('Makespan_Days', float('inf')) < best_score:
-                    best_score = metrics['Makespan_Days']
+                cur_tard = metrics.get('Total_Tardiness_Days', float('inf'))
+                cur_mk = metrics.get('Makespan_Days', float('inf'))
+                # Prefer heuristic with lower total tardiness; tie-break on makespan
+                if cur_tard < best_score or (cur_tard == best_score and cur_mk < best_makespan):
+                    best_score = cur_tard
+                    best_makespan = cur_mk
                     best_heuristic = heur
         
         # Apply the best heuristic automatically
@@ -2658,8 +2962,13 @@ def add_machine(request: AddMachineRequest):
     Add a new machine with specified parameters.
     Automatically rebuilds effective times and recomputes all heuristics.
     """
+    # Require that datasets are loaded before allowing machine changes
     if state.df_machines is None:
-        raise HTTPException(status_code=400, detail="Data not loaded")
+        raise HTTPException(status_code=400, detail="Machine data not loaded")
+    if state.df_ops is None:
+        # Previously this would raise later while iterating and surface as a 500.
+        # Provide a clear 400 error so clients know to load the dataset first.
+        raise HTTPException(status_code=400, detail="Operations dataset not loaded. Please load data before adding machines.")
     
     try:
         # Check if machine ID already exists
@@ -2667,10 +2976,21 @@ def add_machine(request: AddMachineRequest):
             raise HTTPException(status_code=400, detail=f"Machine {request.machine_id} already exists")
         
         # Create new machine row
+        # Accept either a comma-separated string or a list for op_types coming from different clients
+        op_types_val = request.op_types
+        try:
+            # if a list-like was passed accidentally, join it
+            if isinstance(op_types_val, (list, tuple)):
+                op_types_val = ",".join([str(x).strip() for x in op_types_val])
+            else:
+                op_types_val = str(op_types_val)
+        except Exception:
+            op_types_val = str(request.op_types)
+
         new_machine = {
             'Machine_ID': request.machine_id,
             'Machine_Type': request.machine_type,
-            'Op_Types': request.op_types,
+            'Op_Types': op_types_val,
             'Speed_Factor': request.speed_factor,
             'Hourly_Rate': request.hourly_rate,
             'Maintenance_Cost': request.maintenance_cost,
@@ -2710,7 +3030,8 @@ def add_machine(request: AddMachineRequest):
         heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
         results = {}
         best_heuristic = None
-        best_score = float('inf')
+        best_score = float('inf')  # best total tardiness (days)
+        best_makespan = float('inf')
         
         for heur in heuristics:
             df_ops_for_sched = state.df_ops.copy()
@@ -2736,21 +3057,43 @@ def add_machine(request: AddMachineRequest):
             
             if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
                 schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
-                schedule_df = schedule_df.merge(
-                    state.df_ops[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
-                    on='Operation_ID', how='left'
-                )
-                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
-                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                try:
+                    ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                    schedule_df = schedule_df.merge(
+                        ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                        on='Operation_ID', how='left'
+                    )
+                except Exception:
+                    try:
+                        schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+                    except Exception:
+                        pass
+
+                if 'Priority' not in schedule_df.columns:
+                    schedule_df['Priority'] = 3
+                else:
+                    try:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                    except Exception:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+                if 'Assignment_Type' not in schedule_df.columns:
+                    schedule_df['Assignment_Type'] = 'IN_HOUSE'
+                else:
+                    schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+                schedule_df['Proc_Time'] = schedule_df.get('Total_Proc_Min', schedule_df.get('Scheduled_Proc_Time', 0))
                 
                 metrics = calculate_metrics(schedule_df, state.df_ops, heur)
                 state.schedules[heur] = schedule_df
                 state.metrics[heur] = metrics
                 results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
                 
-                if metrics.get('Makespan_Days', float('inf')) < best_score:
-                    best_score = metrics['Makespan_Days']
+                cur_tard = metrics.get('Total_Tardiness_Days', float('inf'))
+                cur_mk = metrics.get('Makespan_Days', float('inf'))
+                if cur_tard < best_score or (cur_tard == best_score and cur_mk < best_makespan):
+                    best_score = cur_tard
+                    best_makespan = cur_mk
                     best_heuristic = heur
         
         # Apply best heuristic
@@ -2828,7 +3171,8 @@ def remove_machine(request: RemoveMachineRequest):
         heuristics = ['SPT', 'EDD', 'CR', 'PRIORITY']
         results = {}
         best_heuristic = None
-        best_score = float('inf')
+        best_score = float('inf')  # best total tardiness (days)
+        best_makespan = float('inf')
         
         for heur in heuristics:
             df_ops_for_sched = state.df_ops.copy()
@@ -2854,21 +3198,43 @@ def remove_machine(request: RemoveMachineRequest):
             
             if schedule is not None and isinstance(schedule, pd.DataFrame) and not schedule.empty:
                 schedule_df = schedule.rename(columns={'Proc_Time': 'Scheduled_Proc_Time'})
-                schedule_df = schedule_df.merge(
-                    state.df_ops[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
-                    on='Operation_ID', how='left'
-                )
-                schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
-                schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
-                schedule_df['Proc_Time'] = schedule_df['Total_Proc_Min']
+                try:
+                    ops_for_merge = prepare_ops_for_merge(state.df_ops)
+                    schedule_df = schedule_df.merge(
+                        ops_for_merge[['Operation_ID', 'Priority', 'Total_Proc_Min', 'Release_Time_Min', 'Due_Time_Min']],
+                        on='Operation_ID', how='left'
+                    )
+                except Exception:
+                    try:
+                        schedule_df = schedule_df.merge(state.df_ops[['Operation_ID']], on='Operation_ID', how='left')
+                    except Exception:
+                        pass
+
+                if 'Priority' not in schedule_df.columns:
+                    schedule_df['Priority'] = 3
+                else:
+                    try:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).astype(int)
+                    except Exception:
+                        schedule_df['Priority'] = schedule_df['Priority'].fillna(3).apply(lambda x: int(float(x)) if pd.notna(x) else 3)
+
+                if 'Assignment_Type' not in schedule_df.columns:
+                    schedule_df['Assignment_Type'] = 'IN_HOUSE'
+                else:
+                    schedule_df['Assignment_Type'] = schedule_df['Assignment_Type'].fillna('IN_HOUSE')
+
+                schedule_df['Proc_Time'] = schedule_df.get('Total_Proc_Min', schedule_df.get('Scheduled_Proc_Time', 0))
                 
                 metrics = calculate_metrics(schedule_df, state.df_ops, heur)
                 state.schedules[heur] = schedule_df
                 state.metrics[heur] = metrics
                 results[heur] = {'schedule': schedule_df.to_dict('records'), 'metrics': metrics}
                 
-                if metrics.get('Makespan_Days', float('inf')) < best_score:
-                    best_score = metrics['Makespan_Days']
+                cur_tard = metrics.get('Total_Tardiness_Days', float('inf'))
+                cur_mk = metrics.get('Makespan_Days', float('inf'))
+                if cur_tard < best_score or (cur_tard == best_score and cur_mk < best_makespan):
+                    best_score = cur_tard
+                    best_makespan = cur_mk
                     best_heuristic = heur
         
         # Apply best heuristic
